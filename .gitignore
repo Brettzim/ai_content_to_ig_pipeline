@@ -1,0 +1,9 @@
+.env
+photos/
+videos/
+edited_photos/
+accounts.json
+__pycache__/
+venv/
+logs/
+.claude
