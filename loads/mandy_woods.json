@@ -1,10 +1,9 @@
 [
   {
-    "photo": "mandywoods2.png",
+    "photo": "personas/mandy_woods/headshot.png",
     "account": "mandy_woods",
-    "post_type": "reel",
-    "scene_prompt": "Eye-level close-up of a blonde woman with long wavy hair loose and a natural tan sitting on a weight bench post-set, a small white towel draped over her shoulders, a water bottle held loosely in one hand, wearing a fitted lavender sports bra and high-waist black leggings and white sneakers on rubber gym flooring. Gym equipment behind her, industrial overhead lighting, a faint sheen of sweat on her skin. Shot on a Contax T2, Kodak Ektar 100, 38mm f/4, soft background, rich analog texture. Keep her face, hair, and body exactly the same.",
-    "video_prompt": "Eye-level close-up. 0-2s: She sits on the bench, water bottle resting in her lap, eyes on the floor in front of her — catching her breath, post-set, completely in her own head. The overhead fan shifts her hair slightly. 2-5s: She tilts her head back slowly and takes a long drink from the bottle, throat moving, then lowers it and spots the camera. 5-8s: She says, warm and dry: 'I'd say I'm taking it easy today but that would be a lie.' 8-10s: She stands up deliberately, rolls her shoulders back, and turns toward the weights — back to work. Camera stays completely still.",
-    "caption": "taking it easy 🎾 (she lied) #gym #athlete #tennis"
+    "post_type": "photo",
+    "scene_prompt": "Candid POV of a tall, athletic woman with a natural tan and toned arms. She sits on a courtside bench, racket resting against her thigh, towel draped over one shoulder, taking a long drink from a water bottle — head tilted back slightly, eyes closed, completely in her own world between sets. Wearing a fitted coral racerback crop top and a white micro pleated tennis skirt. White court shoes, legs extended and crossed at the ankle on the bench. Behind her — empty hardcourt, net visible in the distance, late afternoon light cutting long shadows across the green surface. Shot on a Contax T2, Kodak Ektar 100, 38mm f/4, soft background, subtle film grain. Keep her face, hair, and body exactly the same.",
+    "caption": "between sets 🎾"
   }
 ]

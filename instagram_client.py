@@ -49,8 +49,12 @@ class InstagramClient:
         try:
             resp.raise_for_status()
         except requests.HTTPError:
-            logger.error(f"API error {resp.status_code}: {resp.text}")
-            raise
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text)
+            except Exception:
+                detail = resp.text
+            logger.error(f"API error {resp.status_code}: {detail}")
+            raise requests.HTTPError(f"{resp.status_code}: {detail}", response=resp)
         return resp.json()
 
     def _get(self, path: str, params: dict = None) -> dict:
@@ -60,8 +64,12 @@ class InstagramClient:
         try:
             resp.raise_for_status()
         except requests.HTTPError:
-            logger.error(f"API error {resp.status_code}: {resp.text}")
-            raise
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text)
+            except Exception:
+                detail = resp.text
+            logger.error(f"API error {resp.status_code}: {detail}")
+            raise requests.HTTPError(f"{resp.status_code}: {detail}", response=resp)
         return resp.json()
 
     # ------------------------------------------------------------------ #

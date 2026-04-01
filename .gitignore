@@ -1,9 +1,10 @@
 .env
-photos/
 videos/
 edited_photos/
-accounts.json
 __pycache__/
 venv/
 logs/
+sessions/
 .claude
+personas/
+prompt_engineering/

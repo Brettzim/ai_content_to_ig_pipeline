@@ -25,20 +25,12 @@ POLL_TIMEOUT  = int(os.getenv("POLL_TIMEOUT", "300"))         # max wait for vid
 # ------------------------------------------------------------------ #
 #  Instagram / Meta Graph API                                         #
 # ------------------------------------------------------------------ #
-GRAPH_API_VERSION = "v21.0"
-
 # accounts.json path — each entry: {name, ig_user_id}
-ACCOUNTS_FILE = Path(os.getenv("ACCOUNTS_FILE", BASE_DIR / "accounts.json"))
+ACCOUNTS_FILE = Path(os.getenv("ACCOUNTS_FILE", BASE_DIR / "personas" / "accounts.json"))
 IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "")
 
 # Post rate-limit safety delay between accounts (seconds)
 IG_POST_DELAY = int(os.getenv("IG_POST_DELAY", "10"))
-
-# ------------------------------------------------------------------ #
-#  Fallback file server (ngrok) — only needed if xAI URL has expired  #
-# ------------------------------------------------------------------ #
-NGROK_PATH = os.getenv("NGROK_PATH", "")   # e.g. C:/tools/ngrok.exe
-NGROK_PORT = int(os.getenv("NGROK_PORT", "8000"))
 
 # ------------------------------------------------------------------ #
 #  Directories                                                        #

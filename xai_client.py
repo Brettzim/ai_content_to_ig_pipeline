@@ -10,12 +10,14 @@ Flow:
 """
 
 import base64
+import io
 import time
 import logging
 import mimetypes
 from pathlib import Path
 
 import requests
+from PIL import Image
 
 import config
 
@@ -48,13 +50,50 @@ class XAIClient:
 
         return f"data:{mime_type};base64,{b64}"
 
-    def edit_image(self, image_path: Path, prompt: str, save_path: Path) -> dict:
+    def _stitch_references(self, image_paths: list[Path], max_height: int = 1024) -> str:
         """
-        Edit an image using xAI Aurora image editing.
-        Places the subject in a new outfit/setting described by prompt.
-        Returns the path to the saved edited image.
+        Stitch multiple reference images side-by-side into one composite.
+        Returns a base64 data URI of the composite JPEG.
         """
-        data_uri = self._image_to_data_uri(image_path)
+        images = [Image.open(p) for p in image_paths]
+
+        # Resize all to the same height, preserving aspect ratio
+        resized = []
+        for img in images:
+            ratio = max_height / img.height
+            new_w = int(img.width * ratio)
+            resized.append(img.resize((new_w, max_height), Image.LANCZOS))
+
+        total_width = sum(img.width for img in resized)
+        composite = Image.new("RGB", (total_width, max_height))
+
+        x = 0
+        for img in resized:
+            composite.paste(img, (x, 0))
+            x += img.width
+
+        buf = io.BytesIO()
+        composite.save(buf, format="JPEG", quality=90)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        for img in images:
+            img.close()
+
+        return f"data:image/jpeg;base64,{b64}"
+
+    def edit_image(self, image_paths: list[Path], prompt: str, save_path: Path) -> dict:
+        """
+        Edit image(s) using xAI Aurora image editing.
+        Accepts a list of reference image paths — stitches them into a single
+        composite so the model sees front + left + right angles.
+        Returns the path to the saved edited image and its URL.
+        """
+        image_paths = [Path(p) for p in image_paths]
+        if len(image_paths) == 1:
+            data_uri = self._image_to_data_uri(image_paths[0])
+        else:
+            data_uri = self._stitch_references(image_paths)
+
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -62,6 +101,7 @@ class XAIClient:
             "model": "grok-imagine-image",
             "prompt": prompt,
             "image": {"url": data_uri},
+            "aspect_ratio": "2:3",
         }
 
         resp = self.session.post(
@@ -108,7 +148,10 @@ class XAIClient:
             json=payload,
             timeout=60,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            raise RuntimeError(
+                f"Video submit failed ({resp.status_code}): {resp.text}"
+            )
         data = resp.json()
 
         request_id = data["request_id"]
@@ -129,7 +172,10 @@ class XAIClient:
                 f"{self.base_url}/videos/{request_id}",
                 timeout=30,
             )
-            resp.raise_for_status()
+            if not resp.ok:
+                raise RuntimeError(
+                    f"Video poll failed ({resp.status_code}) for {request_id}: {resp.text}"
+                )
             data = resp.json()
 
             status = data.get("status", "unknown")
