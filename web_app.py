@@ -1,0 +1,530 @@
+"""
+Pipeline web interface.
+Run: venv\Scripts\python web_app.py
+Open: http://localhost:5000
+"""
+
+import json
+import logging
+import random
+import sys
+import threading
+import uuid
+import requests
+from flask import Flask, abort, jsonify, render_template, request, send_from_directory
+
+import config
+from instagram_client import IGAccount, InstagramClient
+from xai_client import XAIClient
+
+app = Flask(__name__)
+log = logging.getLogger(__name__)
+
+# ── Directories ───────────────────────────────────────────────────────────────
+
+PERSONAS_DIR = config.BASE_DIR / "personas"
+PROMPT_ENG_DIR = config.BASE_DIR / "prompt_engineering"
+
+def _discover_personas() -> dict:
+    """
+    Build the PERSONAS dict dynamically from folders in personas/.
+    Each folder must contain a headshot.png. Display name is derived
+    from the folder name (e.g. rachel_key → Rachel Key).
+    Reference images (left_profile.png, right_profile.png) are picked
+    up automatically if present.
+    """
+    personas = {}
+    for folder in sorted(PERSONAS_DIR.iterdir()):
+        if not folder.is_dir():
+            continue
+        headshot = folder / "headshot.png"
+        if not headshot.exists():
+            # Try jpeg variant
+            headshot = folder / "headshot.jpeg"
+        if not headshot.exists():
+            continue
+
+        key = folder.name
+        display_name = key.replace("_", " ").title()
+
+        # Build refs list: headshot first, then any profile images
+        refs = [f"{key}/{headshot.name}"]
+        for profile in ["left_profile.png", "right_profile.png"]:
+            if (folder / profile).exists():
+                refs.append(f"{key}/{profile}")
+
+        personas[key] = {
+            "display_name": display_name,
+            "refs": refs,
+        }
+    return personas
+
+
+PERSONAS = _discover_personas()
+
+
+def _load_persona_guide(persona_key: str) -> str:
+    # Try subfolder first (new layout), then root (legacy)
+    path = PERSONAS_DIR / persona_key / f"{persona_key}.md"
+    if not path.exists():
+        path = PERSONAS_DIR / f"{persona_key}.md"
+    if not path.exists():
+        raise FileNotFoundError(f"Persona guide not found for: {persona_key}")
+    return path.read_text(encoding="utf-8")
+
+
+def _load_prompt_eng(filename: str) -> str:
+    path = PROMPT_ENG_DIR / filename
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def _load_workflow() -> str:
+    return _load_prompt_eng("PROMPT_ENGINEERING_WORKFLOW.md")
+
+
+def _load_engagement_guide() -> str:
+    return _load_prompt_eng("ENGAGEMENT_GUIDE.md")
+
+
+def _load_video_workflow() -> str:
+    return _load_prompt_eng("VIDEO_PROMPT_ENGINEERING_WORKFLOW.md")
+
+
+def _load_creative_direction() -> str:
+    return _load_prompt_eng("CREATIVE_DIRECTION.md")
+
+
+def _load_reel_instructions(reel_mode: str) -> str:
+    filename = "REEL_SEDUCTIVE_LOOK.md" if reel_mode == "seductive_look" else "REEL_DANCE.md"
+    return _load_prompt_eng(filename)
+
+
+HISTORY_MAX = 10  # number of recent prompts to feed back to the LLM
+
+
+def _load_history(persona_key: str) -> list[str]:
+    """Load recent scene prompts for this persona."""
+    path = PERSONAS_DIR / persona_key / "history.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data[-HISTORY_MAX:]
+    except (json.JSONDecodeError, KeyError):
+        return []
+
+
+def _save_history(persona_key: str, scene_prompt: str):
+    """Append a scene prompt to this persona's history."""
+    path = PERSONAS_DIR / persona_key / "history.json"
+    history = _load_history(persona_key)
+    history.append(scene_prompt)
+    # Keep only the last HISTORY_MAX entries
+    history = history[-HISTORY_MAX:]
+    path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+
+def _generate_prompts_ai(persona_key: str, post_type: str) -> dict:
+    workflow = _load_workflow()
+    guide = _load_persona_guide(persona_key)
+    engagement = _load_engagement_guide()
+    creative_direction = _load_creative_direction()
+    video_workflow = _load_video_workflow() if post_type == "reel" else ""
+    p = PERSONAS[persona_key]
+    display_name = p["display_name"]
+    history = _load_history(persona_key)
+
+    video_field = '"video_prompt": "...",' if post_type == "reel" else ""
+
+    video_section = f"""
+=== VIDEO PROMPT ENGINEERING WORKFLOW ===
+{video_workflow}
+""" if post_type == "reel" else ""
+
+    system_msg = f"""You are a professional Instagram content prompt writer for AI image/video generation.
+
+You have the following reference documents. Each document has a specific authority domain — follow it exactly:
+
+=== PROMPT ENGINEERING WORKFLOW ===
+{workflow}
+
+=== ENGAGEMENT GUIDE ===
+{engagement}
+{video_section}
+=== CREATIVE DIRECTION ===
+{creative_direction}
+
+=== MODEL GUIDE ===
+{guide}
+
+## Document Authority Rules
+
+**PROMPT ENGINEERING WORKFLOW** — sole authority on scene prompt structure and word selection.
+Follow the 5-part structure (environment → film layer → camera angle → subject → lighting) and the forbidden/replacement word list exactly.
+
+**ENGAGEMENT GUIDE** — sole authority on caption FORMAT, RULES, and STRUCTURE.
+Use the caption writing rules from this guide for every caption: hook first, 100–150 chars for photos (shorter for reels), no photo description, 1–2 emojis max at end of line, no hashtags in caption.
+Use the Hook Formulas table to select the right hook type for the scene.
+The caption examples in the Model Guide are illustrative of voice and tone ONLY — they do not override the Engagement Guide's structural rules.
+
+**CREATIVE DIRECTION** — sole authority on how to match poses, camera angles, and facial expressions to settings and activities. Follow this guide to build a believable, varied scene.
+
+**MODEL GUIDE** — sole authority on: body specs, approved locations and scenarios, wardrobe, voice/tone, camera style, and the character's emoji palette.
+When writing the caption, use this guide for: what she would say, her personality register, and which 1–2 emojis from her palette fit the hook. Structure and length come from the Engagement Guide.
+
+**VIDEO PROMPT ENGINEERING WORKFLOW** (reels only) — sole authority on beat structure, timing, motion rules, dialogue timing, and character motion profiles.
+
+## CRITICAL: Creative Freedom
+
+You are the creative director. Every generation must be completely unique.
+Read the Model Guide carefully — it defines this character's personality, hobbies, wardrobe, and camera style.
+Read the Creative Direction guide — it tells you how to connect poses, expressions, and camera angles to make a believable scene.
+Be inventive. Think candid, spontaneous, real. Never default to generic "standing and looking at camera."
+Stay within the character's aesthetic but invent something new every time."""
+
+    history_block = ""
+    if history:
+        numbered = "\n".join(f"{i+1}. {p}" for i, p in enumerate(history))
+        history_block = f"""
+RECENTLY GENERATED — DO NOT REPEAT:
+The following scene prompts were recently generated for this character. You MUST create something meaningfully different — different location, different pose, different outfit, different camera angle. Do not reuse the same combination of elements.
+
+{numbered}
+"""
+
+    if post_type == "reel":
+        reel_mode = random.choices(["seductive_look", "dance"], weights=[80, 20], k=1)[0]
+        caption_length = "Max 100 characters — shorter is better for reels"
+
+        scene_instructions = _load_reel_instructions(reel_mode)
+    else:
+        reel_mode = None
+        scene_instructions = "- No video prompt needed"
+        caption_length = "100–150 characters max"
+
+    user_msg = f"""Generate one {post_type} post for {display_name}.
+{history_block}
+IMPORTANT: The image will be generated using image editing with a reference photo of this character's face. The reference photo provides ONLY the face — your prompt controls everything else (body, pose, outfit, setting, camera, expression).
+
+Scene prompt requirements:
+- Start the prompt with: "Using this woman's exact face, generate a photo."
+{"- This is a REEL — the scene prompt creates the starting frame of the video. Follow the reel-specific instructions below carefully." if post_type == "reel" else "- Follow the Creative Direction guide steps: first choose a post type (Step 1), then choose a camera and quality (Step 2) that fits the post type and narrative. Don't default to the same camera every time."}
+- Pick a location from the Model Guide's Settings & Locations that fits the character.
+- Use the Model Guide for body specs, wardrobe aesthetic, and camera style preferences.
+- Include the LOCKED body block from the model guide.
+- Describe the hairstyle for this specific shot (vary it — ponytail, loose, bun, braids, half-up, etc.)
+- Do NOT include the face description block — the reference images handle the face.
+- Follow the structure: reference instruction → setting → body + pose + outfit + hairstyle → camera angle → lighting
+- Scene prompt: 60–80 words
+{scene_instructions}
+
+Caption requirements (follow the Engagement Guide — these rules are non-negotiable):
+- Hook first — the first line must work standalone before the "more" cutoff
+- {caption_length}
+- Do NOT describe the photo or explain the vibe — react to it obliquely, reference it sideways, or ignore it
+- Choose a hook formula from the Engagement Guide that fits the scene (declarative dismissal, double meaning, understatement, etc.)
+- Write in this character's voice using her personality register from the model guide
+- 1–2 emojis maximum, from her emoji palette, at the end of the line only
+- No hashtags in the caption
+
+Return ONLY valid JSON (no markdown, no explanation):
+{{
+  "scene_prompt": "...",
+  {video_field}
+  "caption": "..."
+}}"""
+
+    resp = requests.post(
+        "https://api.x.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {config.XAI_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": "grok-3-latest",
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            "temperature": 1.0,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    content = resp.json()["choices"][0]["message"]["content"].strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1].rsplit("```", 1)[0]
+    result = json.loads(content.strip())
+    _save_history(persona_key, result["scene_prompt"])
+    return result
+
+
+# ── Job store ─────────────────────────────────────────────────────────────────
+
+_jobs: dict[str, dict] = {}
+
+
+def _run_generate(job_id: str):
+    job = _jobs[job_id]
+    try:
+        xai = XAIClient()
+        p = PERSONAS[job["persona"]]
+
+        # Use headshot as reference for face consistency
+        headshot = PERSONAS_DIR / p["refs"][0]
+
+        job["status"] = "editing_image"
+        result = xai.edit_image(
+            image_paths=[headshot],
+            prompt=job["prompts"]["scene_prompt"],
+            save_path=config.EDITED_PHOTOS_DIR / f"{job_id}.png",
+        )
+        job["edited_image"] = f"/media/edited/{job_id}.png"
+        job["image_url"] = result["image_url"]
+
+        if job["post_type"] == "reel":
+            job["status"] = "generating_video"
+            video_result = xai.process_photo(
+                image_path=result["path"],
+                prompt=job["prompts"]["video_prompt"],
+                save_name=job_id,
+            )
+            job["video_url"] = video_result["video_url"]
+            job["video_local"] = str(video_result["path"])
+            job["media_preview"] = f"/media/video/{job_id}.mp4"
+
+        job["status"] = "ready"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        log.exception(f"generate job {job_id} failed")
+
+
+def _run_post(job_id: str):
+    job = _jobs[job_id]
+    try:
+        job["post_status"] = "posting"
+        with open(config.ACCOUNTS_FILE, encoding="utf-8") as f:
+            accounts = {a["name"]: a for a in json.load(f)}
+
+        raw = accounts[job["persona"]]
+        client = InstagramClient(
+            IGAccount(name=raw["name"], ig_user_id=raw["ig_user_id"]),
+            config.IG_ACCESS_TOKEN,
+        )
+
+        if job["post_type"] == "reel":
+            media_id = client.post_reel(video_url=job["video_url"], caption=job["prompts"]["caption"])
+        else:
+            media_id = client.post_photo(image_url=job["image_url"], caption=job["prompts"]["caption"])
+
+        job["post_status"] = "posted"
+        job["media_id"] = media_id
+    except Exception as e:
+        job["post_status"] = "error"
+        job["post_error"] = str(e)
+        log.exception(f"post job {job_id} failed")
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/api/personas")
+def api_personas():
+    return jsonify({
+        k: {"display_name": v["display_name"]}
+        for k, v in PERSONAS.items()
+    })
+
+
+@app.route("/api/generate-prompts", methods=["POST"])
+def api_generate_prompts():
+    data = request.json
+    try:
+        prompts = _generate_prompts_ai(data["persona"], data["post_type"])
+        return jsonify({"ok": True, "prompts": prompts})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/generate-content", methods=["POST"])
+def api_generate_content():
+    data = request.json
+    job_id = uuid.uuid4().hex[:8]
+    _jobs[job_id] = {
+        "id": job_id,
+        "persona": data["persona"],
+        "post_type": data["post_type"],
+        "prompts": data["prompts"],
+        "status": "starting",
+        "post_status": None,
+    }
+    threading.Thread(target=_run_generate, args=(job_id,), daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/clear-history", methods=["POST"])
+def api_clear_history():
+    try:
+        for persona_key in PERSONAS:
+            path = PERSONAS_DIR / persona_key / "history.json"
+            if path.exists():
+                path.unlink()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/job/<job_id>")
+def api_job(job_id):
+    job = _jobs.get(job_id)
+    if not job:
+        abort(404)
+    return jsonify(job)
+
+
+@app.route("/api/post", methods=["POST"])
+def api_post():
+    job_id = request.json["job_id"]
+    job = _jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    threading.Thread(target=_run_post, args=(job_id,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/dashboard")
+def api_dashboard():
+    try:
+        with open(config.ACCOUNTS_FILE, encoding="utf-8") as f:
+            accounts = json.load(f)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    result = {}
+    for acct in accounts:
+        name = acct["name"]
+        uid = acct.get("ig_user_id", "")
+        if not uid:
+            continue
+        try:
+            resp = requests.get(
+                f"https://graph.facebook.com/v21.0/{uid}/media",
+                params={
+                    "fields": "id,caption,media_type,media_url,thumbnail_url,timestamp,like_count,comments_count",
+                    "limit": 12,
+                    "access_token": config.IG_ACCESS_TOKEN,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            posts = resp.json().get("data", [])
+        except Exception as e:
+            posts = []
+            log.warning(f"Dashboard fetch failed for {name}: {e}")
+
+        try:
+            dm_resp = requests.get(
+                f"https://graph.facebook.com/v21.0/{uid}/conversations",
+                params={
+                    "fields": "id,updated_time,messages{message,from,created_time}",
+                    "platform": "instagram",
+                    "access_token": config.IG_ACCESS_TOKEN,
+                },
+                timeout=20,
+            )
+            dm_resp.raise_for_status()
+            conversations = dm_resp.json().get("data", [])
+        except Exception as e:
+            conversations = []
+            log.warning(f"DM fetch failed for {name}: {e}")
+
+        result[name] = {
+            "display_name": PERSONAS.get(name, {}).get("display_name", name),
+            "posts": posts,
+            "total_likes": sum(p.get("like_count", 0) for p in posts),
+            "total_comments": sum(p.get("comments_count", 0) for p in posts),
+            "post_count": len(posts),
+            "conversations": conversations,
+            "dm_count": len(conversations),
+        }
+
+    return jsonify(result)
+
+
+@app.route("/api/reply", methods=["POST"])
+def api_reply():
+    data = request.json
+    comment_id = data["comment_id"]
+    message = data["message"]
+    account_name = data["account"]
+    try:
+        with open(config.ACCOUNTS_FILE, encoding="utf-8") as f:
+            accounts = {a["name"]: a for a in json.load(f)}
+        uid = accounts[account_name]["ig_user_id"]
+        resp = requests.post(
+            f"https://graph.facebook.com/v21.0/{comment_id}/replies",
+            params={"access_token": config.IG_ACCESS_TOKEN},
+            json={"message": message, "ig_user_id": uid},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        return jsonify({"ok": True, "id": resp.json().get("id")})
+    except Exception as e:
+        try:
+            detail = resp.json().get("error", {}).get("message", str(e))
+        except Exception:
+            detail = str(e)
+        return jsonify({"ok": False, "error": detail}), 500
+
+
+@app.route("/api/comments/<media_id>")
+def api_comments(media_id):
+    try:
+        resp = requests.get(
+            f"https://graph.facebook.com/v21.0/{media_id}/comments",
+            params={
+                "fields": "text,username,timestamp,like_count",
+                "limit": 50,
+                "access_token": config.IG_ACCESS_TOKEN,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        return jsonify({"ok": True, "comments": resp.json().get("data", [])})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/media/edited/<filename>")
+def serve_edited(filename):
+    return send_from_directory(config.EDITED_PHOTOS_DIR, filename)
+
+
+@app.route("/media/video/<filename>")
+def serve_video(filename):
+    return send_from_directory(config.VIDEOS_DIR, filename)
+
+
+@app.route("/media/headshot/<persona_key>")
+def serve_headshot(persona_key):
+    folder = PERSONAS_DIR / persona_key
+    for ext in ("png", "jpeg", "jpg"):
+        headshot = folder / f"headshot.{ext}"
+        if headshot.exists():
+            return send_from_directory(folder, headshot.name)
+    abort(404)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stdout,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    config.EDITED_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+    config.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+    app.run(debug=True, port=5000, threaded=True, use_reloader=False)

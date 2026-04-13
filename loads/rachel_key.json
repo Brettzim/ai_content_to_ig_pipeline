@@ -1,10 +1,9 @@
 [
   {
-    "photo": "rachelkey1.jpg",
+    "photo": "personas/rachel_key/headshot.png",
     "account": "rachel_key",
-    "post_type": "reel",
-    "scene_prompt": "Eye-level close-up of a young woman with medium-length brown hair, freckles, and bright expressive eyes sitting at her gaming desk facing the camera, holding a pink energy drink can loosely in one hand, wearing a fitted white off-shoulder crop long-sleeve and a plaid micro skirt. RGB lights behind her cycling slowly through pink and blue, keyboard and monitor setup on the desk in front of her. Shot on a Contax T2, Kodak Ektar 100, 38mm f/5.6, more environment visible, subtle film grain. Keep her face, hair, and body exactly the same.",
-    "video_prompt": "Eye-level close-up. 0-2s: She holds the energy drink can up level with her face, studying it with exaggerated seriousness — the RGB lights behind her cycle slowly from pink to blue. 2-5s: She cracks it open deliberately, the pop sharp in the silence, her eyes moving to the camera. 5-8s: She takes a long sip, holding eye contact the entire time, then lowers the can and says, bright and bubbly: 'this is basically a food group for me.' 8-10s: She sets the can down, cracks her knuckles slowly, and reaches for the keyboard — locked in. Camera stays completely still.",
-    "caption": "a food group 💕🎮 don't judge me #egirl #gamer #setup"
+    "post_type": "photo",
+    "scene_prompt": "Eye-level close-up of a young woman with soft features and heavy-lidded eyes. She lies on her bed on her stomach, chin resting on folded arms, looking directly into the camera — expression completely flat, eyes doing all the work. Wearing a fitted white baby tee cropped above the navel, black thigh-highs disappearing under the hem of a tiny plaid mini skirt. Bare feet kicked up behind her. Underneath her — rumpled pastel bedding. Behind her — bedroom wall with neon LED strips casting the room in soft pink-purple, anime posters on the wall, a controller on the nightstand. Shot on a Contax T2, Kodak Ektar 100, 38mm f/2.8, shallow depth of field, rich analog texture. Keep her face, hair, and body exactly the same.",
+    "caption": "it's just a costume 🎮🙈"
   }
 ]

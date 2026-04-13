@@ -31,7 +31,7 @@ Drop any number of .json files here. Each file is a list of jobs:
 
 [
   {
-    "photo": "valentinavixen2.png",
+    "photo": "personas/valentina_vixen/headshot.png",
     "account": "personality_one",
     "scene_prompt": "Place this woman at [setting] wearing [outfit]. Keep her face, hair, and body exactly the same.",
     "video_prompt": "She turns toward the camera with a slow smile. She mouths 'you know you want to'. Camera stays completely still.",
@@ -68,12 +68,17 @@ DEFAULT_PROMPT = (
 
 def setup_logging():
     config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    import io
+    stream_handler = logging.StreamHandler(
+        io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    )
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format=fmt,
         handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(config.LOGS_DIR / "pipeline.log"),
+            stream_handler,
+            logging.FileHandler(config.LOGS_DIR / "pipeline.log", encoding="utf-8"),
         ],
     )
 
@@ -82,22 +87,20 @@ def setup_logging():
 #  Accounts                                                           #
 # ------------------------------------------------------------------ #
 
-def load_accounts(names_filter: list[str] = None) -> list[IGAccount]:
-    """Load accounts from accounts.json, optionally filtered by name."""
+def load_accounts() -> dict:
+    """Load accounts from accounts.json. Returns a dict keyed by name."""
     if not config.ACCOUNTS_FILE.exists():
         raise FileNotFoundError(
-            f"accounts.json not found at {config.ACCOUNTS_FILE}\n"
-            f"Copy accounts.json.example -> accounts.json and fill in your credentials."
+            f"accounts.json not found at {config.ACCOUNTS_FILE}"
         )
     with open(config.ACCOUNTS_FILE, encoding="utf-8") as f:
         raw = json.load(f)
+    return {a["name"]: a for a in raw}
 
-    accounts = [IGAccount(**a) for a in raw]
-    if names_filter:
-        accounts = [a for a in accounts if a.name in names_filter]
-        if not accounts:
-            raise ValueError(f"None of the requested accounts found: {names_filter}")
-    return accounts
+
+def make_client(raw: dict) -> InstagramClient:
+    account = IGAccount(name=raw["name"], ig_user_id=raw["ig_user_id"])
+    return InstagramClient(account, config.IG_ACCESS_TOKEN)
 
 
 # ------------------------------------------------------------------ #
@@ -109,7 +112,15 @@ def load_jobs_file(path: Path, accounts_map: dict, upload: bool) -> list[tuple]:
         raw = json.load(f)
     jobs = []
     for entry in raw:
-        photo = (config.PHOTOS_DIR / entry["photo"]).resolve()
+        photo_val = entry["photo"]
+        # Support persona-relative paths (e.g. "personas/rachel_key/headshot.png")
+        photo_path = Path(photo_val)
+        if photo_path.is_absolute():
+            photo = photo_path.resolve()
+        elif photo_val.startswith("personas/"):
+            photo = (config.BASE_DIR / photo_val).resolve()
+        else:
+            photo = (config.PHOTOS_DIR / photo_val).resolve()
         # scene_prompt is optional — if absent, base photo is used directly
         scene_prompt = entry.get("scene_prompt")
         video_prompt = entry.get("video_prompt") or entry.get("prompt") or DEFAULT_PROMPT
@@ -117,11 +128,11 @@ def load_jobs_file(path: Path, accounts_map: dict, upload: bool) -> list[tuple]:
         post_type = entry.get("post_type", "reel")
         if post_type not in ("reel", "photo"):
             raise ValueError(f"Invalid post_type '{post_type}' — must be 'reel' or 'photo'")
-        clients: list[InstagramClient] = []
+        clients = []
         if upload:
             account_name = entry.get("account")
             if account_name and account_name in accounts_map:
-                clients = [InstagramClient(accounts_map[account_name], config.IG_ACCESS_TOKEN)]
+                clients = [make_client(accounts_map[account_name])]
             elif account_name:
                 raise ValueError(f"Account '{account_name}' not found in accounts.json")
         jobs.append((photo, scene_prompt, video_prompt, caption, post_type, clients))
@@ -137,6 +148,10 @@ def load_all_jobs(loads_dir: Path, accounts_map: dict, upload: bool) -> list[tup
     for jf in job_files:
         jobs.extend(load_jobs_file(jf, accounts_map, upload))
     return jobs
+
+
+def _client_name(client) -> str:
+    return client.account.name
 
 
 # ------------------------------------------------------------------ #
@@ -172,17 +187,18 @@ def process_job(
 
         if post_type == "photo":
             # ── Step 2 (photo): Upload edited image directly ──────────
-            if not source_url:
-                raise ValueError("photo post_type requires a scene_prompt to generate a public image URL")
             for client in ig_clients:
+                name = _client_name(client)
                 try:
+                    if not source_url:
+                        raise ValueError("API photo post requires a scene_prompt to generate a public URL")
                     media_id = client.post_photo(image_url=source_url, caption=caption)
-                    ig_posts[client.account.name] = media_id
-                    logger.info(f"[{photo.name}] Photo posted to {client.account.name} -> {media_id}")
+                    ig_posts[name] = media_id
+                    logger.info(f"[{photo.name}] Photo posted to {name} -> {media_id}")
                 except Exception as e:
                     err = str(e)
-                    ig_posts[client.account.name] = f"FAIL: {err}"
-                    logger.error(f"[{photo.name}] IG photo post failed for {client.account.name}: {err}")
+                    ig_posts[name] = f"FAIL: {err}"
+                    logger.error(f"[{photo.name}] IG photo post failed for {name}: {err}")
                 finally:
                     time.sleep(config.IG_POST_DELAY)
 
@@ -195,14 +211,15 @@ def process_job(
 
             # ── Step 3 (reel): Upload to each Instagram account ───────
             for client in ig_clients:
+                name = _client_name(client)
                 try:
                     media_id = client.post_reel(video_url=video_url, caption=caption)
-                    ig_posts[client.account.name] = media_id
-                    logger.info(f"[{photo.name}] Reel posted to {client.account.name} -> {media_id}")
+                    ig_posts[name] = media_id
+                    logger.info(f"[{photo.name}] Reel posted to {name} -> {media_id}")
                 except Exception as e:
                     err = str(e)
-                    ig_posts[client.account.name] = f"FAIL: {err}"
-                    logger.error(f"[{photo.name}] IG reel post failed for {client.account.name}: {err}")
+                    ig_posts[name] = f"FAIL: {err}"
+                    logger.error(f"[{photo.name}] IG reel post failed for {name}: {err}")
                 finally:
                     time.sleep(config.IG_POST_DELAY)
 
@@ -248,7 +265,7 @@ def main():
     if args.resolution: config.VIDEO_RESOLUTION   = args.resolution
 
     # ── Load accounts ─────────────────────────────────────────────────
-    accounts_map = {a.name: a for a in load_accounts()} if upload else {}
+    accounts_map = load_accounts() if upload else {}
 
     # ── Load jobs ─────────────────────────────────────────────────────
     if args.loads_file:
