@@ -33,6 +33,13 @@ IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "")
 IG_POST_DELAY = int(os.getenv("IG_POST_DELAY", "10"))
 
 # ------------------------------------------------------------------ #
+#  Instagram Web Client (Playwright / stealth)                        #
+# ------------------------------------------------------------------ #
+WEB_CREDENTIALS_FILE = Path(os.getenv("WEB_CREDENTIALS_FILE", BASE_DIR / "personas" / "web_credentials.json"))
+SESSIONS_DIR         = Path(os.getenv("SESSIONS_DIR",         BASE_DIR / "sessions"))
+WEB_HEADLESS         = os.getenv("WEB_HEADLESS", "false").lower() == "true"
+
+# ------------------------------------------------------------------ #
 #  Directories                                                        #
 # ------------------------------------------------------------------ #
 PHOTOS_DIR        = Path(os.getenv("PHOTOS_DIR",        BASE_DIR / "photos"))
