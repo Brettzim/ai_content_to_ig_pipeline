@@ -42,13 +42,17 @@ Drop any number of .json files here. Each file is a list of jobs:
 scene_prompt is optional. If omitted, the base photo is used directly for video generation.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _pathsetup  # noqa: F401
+
 import argparse
 import json
 import logging
-import sys
 import time
 import concurrent.futures
-from pathlib import Path
 
 from xai_client import XAIClient
 from instagram_client import InstagramClient, IGAccount

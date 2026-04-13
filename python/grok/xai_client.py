@@ -9,12 +9,17 @@ Flow:
   5. Download the video from the temporary URL
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _pathsetup  # noqa: F401
+
 import base64
 import io
 import time
 import logging
 import mimetypes
-from pathlib import Path
 
 import requests
 from PIL import Image

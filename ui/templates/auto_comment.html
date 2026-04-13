@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auto-Comment — AI Pimp Studio</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@300;400&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:#0b0909; --surface:#111010; --border:#242020;
+      --gold:#c9a55a; --gold-dim:#7a6030; --rose:#b5507a;
+      --text:#ede8e0; --muted:#ffffff; --radius:6px;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Jost',sans-serif;font-weight:300;font-size:14px;line-height:1.6;}
+    body::before{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");background-size:200px 200px;pointer-events:none;z-index:9999;opacity:0.6;}
+    header{display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:56px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:100;}
+    .wordmark{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:400;letter-spacing:0.02em;color:var(--text);}
+    nav{display:flex;gap:2px;}
+    .nav-btn{background:none;border:none;color:var(--muted);font-family:'Jost',sans-serif;font-size:11px;font-weight:500;letter-spacing:0.15em;text-transform:uppercase;cursor:pointer;padding:6px 16px;border-radius:var(--radius);transition:color .2s,background .2s;text-decoration:none;display:inline-flex;align-items:center;}
+    .nav-btn:hover{color:var(--text);}
+    .nav-btn.active{color:var(--gold);background:rgba(201,165,90,0.08);}
+    main{padding:32px;max-width:1600px;margin:0 auto;}
+    h1{font-family:'Cormorant Garamond',serif;font-weight:400;font-size:28px;margin-bottom:6px;color:var(--gold);}
+    .subtitle{color:#8a8580;font-size:12px;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:24px;}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:20px;}
+    .card h2{font-family:'Cormorant Garamond',serif;font-size:18px;font-weight:400;color:var(--text);margin-bottom:12px;letter-spacing:0.04em;}
+    label{display:block;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8a8580;margin-bottom:6px;}
+    textarea,input[type=text],input[type=number]{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:var(--radius);font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical;}
+    textarea:focus,input:focus{outline:none;border-color:var(--gold-dim);}
+    .row{display:flex;gap:16px;}
+    .row > div{flex:1;}
+    button.primary{background:var(--gold);color:#0b0909;border:none;padding:10px 24px;font-family:'Jost',sans-serif;font-size:11px;font-weight:600;letter-spacing:0.15em;text-transform:uppercase;border-radius:var(--radius);cursor:pointer;transition:background .2s;}
+    button.primary:hover{background:#d6b46a;}
+    button.primary:disabled{background:#3a3330;color:#6a6360;cursor:not-allowed;}
+    button.secondary{background:transparent;color:var(--text);border:1px solid var(--border);padding:8px 18px;font-family:'Jost',sans-serif;font-size:11px;letter-spacing:0.15em;text-transform:uppercase;border-radius:var(--radius);cursor:pointer;}
+    button.secondary:hover{border-color:var(--gold-dim);}
+    table{width:100%;border-collapse:collapse;font-size:12px;}
+    th,td{padding:10px 12px;border-bottom:1px solid var(--border);text-align:center;}
+    th{font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#8a8580;font-weight:500;}
+    th.target-col,td.target-col{text-align:left;font-family:'JetBrains Mono',monospace;color:var(--text);white-space:nowrap;}
+    td input[type=checkbox]{width:16px;height:16px;accent-color:var(--gold);cursor:pointer;}
+    td .remove-btn{background:none;border:none;color:#6a5555;cursor:pointer;font-size:14px;}
+    td .remove-btn:hover{color:var(--rose);}
+    .add-row{display:flex;gap:8px;margin-top:12px;align-items:center;}
+    .add-row input{max-width:280px;}
+    .status-panel{font-family:'JetBrains Mono',monospace;font-size:12px;background:#000;border:1px solid var(--border);border-radius:var(--radius);padding:14px;max-height:300px;overflow:auto;white-space:pre-wrap;color:#b5b0a8;}
+    .bar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:20px;}
+    .hint{color:#6a6560;font-size:11px;margin-top:6px;}
+    .pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;}
+    .pill.idle{background:#2a2520;color:#8a8580;}
+    .pill.running{background:rgba(201,165,90,0.15);color:var(--gold);}
+    .pill.done{background:rgba(120,180,120,0.15);color:#78b478;}
+    .pill.error{background:rgba(181,80,122,0.15);color:var(--rose);}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wordmark">AI Pimp Studio</div>
+    <nav>
+      <a class="nav-btn" href="/">Generate</a>
+      <a class="nav-btn" href="/#dashboard">Dashboard</a>
+      <a class="nav-btn active" href="/auto-comment">Auto-Comment</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Auto-Comment</h1>
+    <div class="subtitle">Cycle each girl through her checked target accounts and drop a comment on the most recent non-pinned post.</div>
+
+    <div class="card">
+      <h2>Comment bank</h2>
+      <label>One comment per line — random draw, no immediate repeats</label>
+      <textarea id="comments" rows="6" placeholder="Wow, bravo&#10;obsessed&#10;stunning"></textarea>
+    </div>
+
+    <div class="card">
+      <div class="bar">
+        <h2 style="margin:0;">Targets × Girls</h2>
+        <div style="font-size:11px;color:#8a8580;">Check a cell → that girl will comment on that target</div>
+      </div>
+      <div style="overflow:auto;">
+        <table id="grid">
+          <thead><tr id="grid-head"></tr></thead>
+          <tbody id="grid-body"></tbody>
+        </table>
+      </div>
+      <div class="add-row">
+        <input type="text" id="new-target" placeholder="add target username (no @)">
+        <button class="secondary" onclick="addTarget()">Add target</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Timing</h2>
+      <div class="row">
+        <div>
+          <label>Delay between targets (seconds)</label>
+          <div class="row">
+            <input type="number" id="delay_t_lo" min="0" step="1">
+            <input type="number" id="delay_t_hi" min="0" step="1">
+          </div>
+          <div class="hint">min / max — random uniform draw</div>
+        </div>
+        <div>
+          <label>Delay between accounts (seconds)</label>
+          <div class="row">
+            <input type="number" id="delay_a_lo" min="0" step="1">
+            <input type="number" id="delay_a_hi" min="0" step="1">
+          </div>
+          <div class="hint">min / max — random uniform draw</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="bar">
+        <div>
+          <button class="primary" id="save-btn" onclick="save()">Save config</button>
+          <button class="primary" id="run-btn" onclick="run(false)" style="margin-left:8px;">Run</button>
+          <button class="secondary" onclick="run(true)" style="margin-left:8px;">Dry-run</button>
+        </div>
+        <span id="status-pill" class="pill idle">idle</span>
+      </div>
+      <div class="status-panel" id="status-panel">No runs yet.</div>
+    </div>
+  </main>
+
+  <script>
+    let state = { comments: [], accounts: {}, targets: [], delay_t: [25,70], delay_a: [60,180] };
+    let personas = {};
+    let pollTimer = null;
+    let currentJob = null;
+
+    async function load() {
+      const [cfg, p] = await Promise.all([
+        fetch('/api/auto-comment/config').then(r=>r.json()),
+        fetch('/api/personas').then(r=>r.json()),
+      ]);
+      personas = p;
+      state.comments = cfg.comments || [];
+      state.accounts = cfg.accounts || {};
+      state.delay_t = cfg.delay_between_targets_s || [25,70];
+      state.delay_a = cfg.delay_between_accounts_s || [60,180];
+      document.getElementById('comments').value = state.comments.join('\n');
+      document.getElementById('delay_t_lo').value = state.delay_t[0];
+      document.getElementById('delay_t_hi').value = state.delay_t[1];
+      document.getElementById('delay_a_lo').value = state.delay_a[0];
+      document.getElementById('delay_a_hi').value = state.delay_a[1];
+      for (const g of Object.keys(personas)) if (!state.accounts[g]) state.accounts[g] = [];
+      // seed targets universe from union of all existing lists
+      const s = new Set();
+      for (const list of Object.values(state.accounts)) list.forEach(t => s.add(t));
+      state.targets = Array.from(s).sort();
+      renderGrid();
+    }
+
+    function renderGrid() {
+      const girls = Object.keys(personas).sort();
+      const targets = state.targets;
+      const head = document.getElementById('grid-head');
+      const body = document.getElementById('grid-body');
+      head.innerHTML = '<th class="target-col">Target</th>' +
+        girls.map(g => `<th>${personas[g].display_name}</th>`).join('') +
+        '<th></th>';
+      body.innerHTML = targets.length === 0
+        ? `<tr><td colspan="${girls.length+2}" style="color:#6a6560;padding:22px;">No targets yet — add one below.</td></tr>`
+        : targets.map(t => `
+            <tr>
+              <td class="target-col">${t}</td>
+              ${girls.map(g => `<td><input type="checkbox" data-t="${t}" data-g="${g}" ${state.accounts[g].includes(t)?'checked':''} onchange="toggle(this)"></td>`).join('')}
+              <td><button class="remove-btn" title="remove target" onclick="removeTarget('${t}')">×</button></td>
+            </tr>
+          `).join('');
+    }
+
+    function toggle(cb) {
+      const t = cb.dataset.t, g = cb.dataset.g;
+      const list = state.accounts[g] || (state.accounts[g] = []);
+      const i = list.indexOf(t);
+      if (cb.checked && i < 0) list.push(t);
+      if (!cb.checked && i >= 0) list.splice(i, 1);
+    }
+
+    function addTarget() {
+      const inp = document.getElementById('new-target');
+      const v = (inp.value || '').trim().replace(/^@/, '');
+      inp.value = '';
+      if (!v || state.targets.includes(v)) return;
+      state.targets.push(v);
+      state.targets.sort();
+      renderGrid();
+    }
+
+    function removeTarget(t) {
+      state.targets = state.targets.filter(x => x !== t);
+      for (const g of Object.keys(state.accounts)) {
+        state.accounts[g] = state.accounts[g].filter(x => x !== t);
+      }
+      renderGrid();
+    }
+
+    function collect() {
+      const comments = document.getElementById('comments').value
+        .split('\n').map(s => s.trim()).filter(Boolean);
+      const delay_t = [
+        Number(document.getElementById('delay_t_lo').value),
+        Number(document.getElementById('delay_t_hi').value),
+      ];
+      const delay_a = [
+        Number(document.getElementById('delay_a_lo').value),
+        Number(document.getElementById('delay_a_hi').value),
+      ];
+      return {
+        comments,
+        accounts: state.accounts,
+        delay_between_targets_s: delay_t,
+        delay_between_accounts_s: delay_a,
+      };
+    }
+
+    async function save() {
+      const body = collect();
+      const r = await fetch('/api/auto-comment/config', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      setStatus(j.ok ? 'Config saved.' : ('Save failed: ' + j.error), j.ok ? 'idle' : 'error');
+    }
+
+    async function run(dry) {
+      await save();
+      const r = await fetch('/api/auto-comment/run', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ dry_run: dry }),
+      });
+      const j = await r.json();
+      if (!j.ok) { setStatus('Run failed: ' + j.error, 'error'); return; }
+      currentJob = j.job_id;
+      setPill('running');
+      poll();
+    }
+
+    function setPill(kind) {
+      const p = document.getElementById('status-pill');
+      p.className = 'pill ' + kind;
+      p.textContent = kind;
+    }
+
+    function setStatus(text, kind) {
+      const panel = document.getElementById('status-panel');
+      panel.textContent = text;
+      if (kind) setPill(kind);
+    }
+
+    async function poll() {
+      if (!currentJob) return;
+      clearTimeout(pollTimer);
+      const r = await fetch('/api/auto-comment/job/' + currentJob);
+      if (!r.ok) { setStatus('Job not found', 'error'); return; }
+      const j = await r.json();
+      const lines = [];
+      lines.push(`status: ${j.status}`);
+      if (j.error) lines.push(`error: ${j.error}`);
+      if (j.results && j.results.length) {
+        lines.push('');
+        for (const row of j.results) {
+          lines.push(`[${row.account}] ${row.succeeded}/${row.attempted} ok` +
+            (row.failed && row.failed.length ? `, ${row.failed.length} failed` : ''));
+          for (const f of (row.failed || [])) {
+            lines.push(`  ✗ ${f.target}: ${f.reason}`);
+          }
+        }
+      }
+      if (j.log && j.log.length) {
+        lines.push('');
+        lines.push('--- log ---');
+        lines.push(...j.log.slice(-80));
+      }
+      document.getElementById('status-panel').textContent = lines.join('\n');
+      if (j.status === 'done') setPill('done');
+      else if (j.status === 'error') setPill('error');
+      else { pollTimer = setTimeout(poll, 1500); return; }
+    }
+
+    load();
+  </script>
+</body>
+</html>

@@ -14,11 +14,16 @@ Strategy (per latenode bot-detection guide):
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _pathsetup  # noqa: F401
+
 import json
 import logging
 import random
 import time
-from pathlib import Path
 from typing import Optional
 
 from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright

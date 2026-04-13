@@ -7,30 +7,49 @@ Generates AI images and videos from photos using the xAI Grok API, then posts th
 
 ```bash
 # Web UI (preferred)
-venv\Scripts\python web_app.py
+venv\Scripts\python ui/web_app.py
 # Open http://localhost:5000
 
 # CLI — run all loads
-venv\Scripts\python run.py
+venv\Scripts\python python/meta_api/run.py
 
 # CLI — single file, no upload
-venv\Scripts\python run.py --loads-file loads/valentina_vixen.json --no-upload
+venv\Scripts\python python/meta_api/run.py --loads-file ai/loads/valentina_vixen.json --no-upload
+
+# Auto-commenter (web crawler)
+venv\Scripts\python python/web_crawler/auto_commenter.py
 ```
 
 ## Project Structure
 
 ```
-personas/              — per-model folders with profile .md, reference photos, history
-prompt_engineering/    — universal prompt rules (scene, video, reels, engagement, creative direction)
-loads/                 — CLI job JSON files (one per model)
-photos/                — source images
-edited_photos/         — auto-generated intermediate images
-videos/                — final generated videos
-accounts.json          — Instagram accounts (name + ig_user_id only, no tokens)
-.env                   — secrets: XAI_API_KEY, IG_ACCESS_TOKEN
-web_app.py             — Flask web UI
-run.py                 — CLI pipeline runner
+ai/                           — all content & data
+  personas/                   — per-model folders (profile .md, refs, history)
+                                plus accounts.json, web_credentials.json, auto_comment_config.json
+  prompt_engineering/         — universal prompt rules
+  loads/                      — CLI job JSON files
+  photos/ edited_photos/ videos/
+
+python/                       — all Python modules (flat-import style)
+  config.py                   — shared settings; resolves paths from project root
+  _pathsetup.py               — shim that puts grok/, meta_api/, web_crawler/ on sys.path
+  grok/xai_client.py
+  meta_api/instagram_client.py
+  meta_api/run.py             — CLI pipeline runner
+  web_crawler/ig_web_client.py
+  web_crawler/auto_commenter.py
+  web_crawler/sessions/       — Playwright storage_state per account
+
+ui/                           — Flask frontend
+  web_app.py  templates/  static/
+
+logs/                         — runtime logs
+.env                          — secrets: XAI_API_KEY, IG_ACCESS_TOKEN
 ```
+
+Each entry script prepends `python/` to `sys.path` and imports `_pathsetup`,
+which makes flat imports (`import config`, `from xai_client import ...`,
+`import ig_web_client as web`) work regardless of folder.
 
 ## Content Generation
 

@@ -1,29 +1,39 @@
 """
 Pipeline web interface.
-Run: venv\Scripts\python web_app.py
+Run: venv\\Scripts\\python ui/web_app.py
 Open: http://localhost:5000
 """
+
+import sys
+from pathlib import Path
+
+# Make python/ modules importable (flat imports: config, auto_commenter, etc.)
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT / "python"))
+import _pathsetup  # noqa: F401  — injects grok/, meta_api/, web_crawler/ into sys.path
 
 import json
 import logging
 import random
-import sys
 import threading
 import uuid
 import requests
 from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 
 import config
+import auto_commenter
 from instagram_client import IGAccount, InstagramClient
 from xai_client import XAIClient
+
+AUTO_COMMENT_CONFIG_PATH = config.PERSONAS_DIR / "auto_comment_config.json"
 
 app = Flask(__name__)
 log = logging.getLogger(__name__)
 
 # ── Directories ───────────────────────────────────────────────────────────────
 
-PERSONAS_DIR = config.BASE_DIR / "personas"
-PROMPT_ENG_DIR = config.BASE_DIR / "prompt_engineering"
+PERSONAS_DIR = config.PERSONAS_DIR
+PROMPT_ENG_DIR = config.PROMPT_ENG_DIR
 
 def _discover_personas() -> dict:
     """
@@ -330,6 +340,113 @@ def _run_post(job_id: str):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/auto-comment")
+def auto_comment_page():
+    return render_template("auto_comment.html")
+
+
+# ── Auto-comment API ──────────────────────────────────────────────────────────
+
+_auto_jobs: dict[str, dict] = {}
+
+
+class _ListLogHandler(logging.Handler):
+    def __init__(self, buf: list):
+        super().__init__()
+        self.buf = buf
+
+    def emit(self, record):
+        try:
+            self.buf.append(self.format(record))
+            if len(self.buf) > 500:
+                del self.buf[:len(self.buf) - 500]
+        except Exception:
+            pass
+
+
+def _load_auto_config() -> dict:
+    if not AUTO_COMMENT_CONFIG_PATH.exists():
+        return {"comments": [], "accounts": {},
+                "delay_between_targets_s": [25, 70],
+                "delay_between_accounts_s": [60, 180]}
+    with open(AUTO_COMMENT_CONFIG_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_auto_config(data: dict) -> None:
+    AUTO_COMMENT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(AUTO_COMMENT_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+@app.route("/api/auto-comment/config", methods=["GET", "POST"])
+def api_auto_comment_config():
+    if request.method == "GET":
+        return jsonify(_load_auto_config())
+    try:
+        data = request.json or {}
+        accounts = {g: list(dict.fromkeys(ts)) for g, ts in (data.get("accounts") or {}).items()}
+        cleaned = {
+            "comments": [c for c in (data.get("comments") or []) if c.strip()],
+            "accounts": accounts,
+            "delay_between_targets_s": data.get("delay_between_targets_s", [25, 70]),
+            "delay_between_accounts_s": data.get("delay_between_accounts_s", [60, 180]),
+        }
+        _save_auto_config(cleaned)
+        return jsonify({"ok": True})
+    except Exception as e:
+        log.exception("save auto-comment config failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _run_auto_commenter(job_id: str, dry_run: bool):
+    job = _auto_jobs[job_id]
+    logger = logging.getLogger("auto_commenter")
+    web_logger = logging.getLogger("ig_web_client")
+    handler = _ListLogHandler(job["log"])
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    web_logger.addHandler(handler)
+    try:
+        job["status"] = "running"
+        results = auto_commenter.run(AUTO_COMMENT_CONFIG_PATH, dry_run=dry_run)
+        job["results"] = results
+        job["status"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        log.exception(f"auto-comment job {job_id} failed")
+    finally:
+        logger.removeHandler(handler)
+        web_logger.removeHandler(handler)
+
+
+@app.route("/api/auto-comment/run", methods=["POST"])
+def api_auto_comment_run():
+    try:
+        data = request.json or {}
+        dry_run = bool(data.get("dry_run"))
+        job_id = uuid.uuid4().hex[:8]
+        _auto_jobs[job_id] = {
+            "id": job_id, "status": "starting",
+            "results": [], "log": [], "dry_run": dry_run,
+        }
+        threading.Thread(
+            target=_run_auto_commenter, args=(job_id, dry_run), daemon=True,
+        ).start()
+        return jsonify({"ok": True, "job_id": job_id})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/auto-comment/job/<job_id>")
+def api_auto_comment_job(job_id):
+    job = _auto_jobs.get(job_id)
+    if not job:
+        abort(404)
+    return jsonify(job)
 
 
 @app.route("/api/personas")

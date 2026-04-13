@@ -21,13 +21,17 @@ Run:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _pathsetup  # noqa: F401
+
 import argparse
 import json
 import logging
 import random
-import sys
 import time
-from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
 
@@ -36,7 +40,7 @@ import ig_web_client as web
 
 log = logging.getLogger("auto_commenter")
 
-DEFAULT_CONFIG_PATH = config.BASE_DIR / "personas" / "auto_comment_config.json"
+DEFAULT_CONFIG_PATH = config.PERSONAS_DIR / "auto_comment_config.json"
 
 
 def _load_config(path: Path) -> dict:
@@ -77,7 +81,7 @@ def _process_account_on_page(page: Page, account_name: str, targets: list[str],
     """Run the comment loop for one account on an already-authenticated page."""
     stats = {"account": account_name, "attempted": 0, "succeeded": 0, "failed": []}
 
-    for target in targets:
+    for t_idx, target in enumerate(targets):
         comment_text = pick_comment()
         stats["attempted"] += 1
         log.info(f"[{account_name}] → target={target!r}  comment={comment_text!r}")
@@ -107,9 +111,10 @@ def _process_account_on_page(page: Page, account_name: str, targets: list[str],
         finally:
             web.close_post_view(page)
 
-        delay = _pick_delay(delay_between_targets, (25.0, 70.0))
-        log.info(f"[{account_name}] waiting {delay:.1f}s before next target")
-        time.sleep(delay)
+        if t_idx < len(targets) - 1:
+            delay = _pick_delay(delay_between_targets, (25.0, 70.0))
+            log.info(f"[{account_name}] waiting {delay:.1f}s before next target")
+            time.sleep(delay)
 
     return stats
 
@@ -134,8 +139,18 @@ def run(config_path: Path = DEFAULT_CONFIG_PATH,
         if not items:
             raise KeyError(f"Account {only_account!r} not found in config")
 
-    first_account = items[0][0]
-    # First account's session must exist — log in if it doesn't
+    # Always anchor the browser session on valentina_vixen — her storage_state
+    # holds the multi-login roster for every other account. If valentina isn't
+    # in `items` (e.g. --account filtered her out), we still open her session
+    # and switch away from her before doing any work.
+    ANCHOR = "valentina_vixen"
+    anchor_in_items = any(n == ANCHOR for n, _ in items)
+    if anchor_in_items:
+        anchor_idx = next(i for i, (n, _) in enumerate(items) if n == ANCHOR)
+        if anchor_idx != 0:
+            items.insert(0, items.pop(anchor_idx))
+    first_account = ANCHOR
+    # Anchor session must exist — log in if it doesn't
     web.ensure_session(first_account)
 
     all_stats: list[dict] = []
@@ -152,8 +167,10 @@ def run(config_path: Path = DEFAULT_CONFIG_PATH,
             for idx, (name, targets) in enumerate(items):
                 log.info(f"=== Starting account {name} ({len(targets)} targets) ===")
 
-                # For accounts after the first, switch via IG's native flow
-                if idx > 0:
+                # Switch from the anchor (or prior account) to this one, unless
+                # we're already on it (i.e. idx 0 and anchor is in items).
+                need_switch = not (idx == 0 and anchor_in_items and name == ANCHOR)
+                if need_switch:
                     switched = False
                     try:
                         switched = web.switch_account(page, name)
