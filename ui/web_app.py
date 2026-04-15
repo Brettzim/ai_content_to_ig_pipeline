@@ -26,6 +26,7 @@ from instagram_client import IGAccount, InstagramClient
 from xai_client import XAIClient
 
 AUTO_COMMENT_CONFIG_PATH = config.PERSONAS_DIR / "auto_comment_config.json"
+WEB_CREDENTIALS_PATH = config.PERSONAS_DIR / "web_credentials.json"
 
 app = Flask(__name__)
 log = logging.getLogger(__name__)
@@ -367,12 +368,36 @@ class _ListLogHandler(logging.Handler):
 
 
 def _load_auto_config() -> dict:
+    default = {
+        "comments": [], "accounts": [], "assignments": {},
+        "delay_between_targets_s": [25, 70],
+        "delay_between_accounts_s": [60, 180],
+    }
     if not AUTO_COMMENT_CONFIG_PATH.exists():
-        return {"comments": [], "accounts": {},
-                "delay_between_targets_s": [25, 70],
-                "delay_between_accounts_s": [60, 180]}
+        return default
     with open(AUTO_COMMENT_CONFIG_PATH, encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    # Migrate legacy {"accounts": {girl: [targets]}} → assignments + accounts list
+    if isinstance(cfg.get("accounts"), dict):
+        legacy = cfg.pop("accounts")
+        cfg.setdefault("assignments", legacy)
+        seen, flat = set(), []
+        for ts in legacy.values():
+            for t in ts:
+                if t not in seen:
+                    seen.add(t); flat.append(t)
+        cfg.setdefault("accounts", flat)
+    for k, v in default.items():
+        cfg.setdefault(k, v)
+    return cfg
+
+
+def _load_web_credential_names() -> list[str]:
+    if not WEB_CREDENTIALS_PATH.exists():
+        return []
+    with open(WEB_CREDENTIALS_PATH, encoding="utf-8") as f:
+        creds = json.load(f)
+    return [c["name"] for c in creds if c.get("name")]
 
 
 def _save_auto_config(data: dict) -> None:
@@ -387,10 +412,18 @@ def api_auto_comment_config():
         return jsonify(_load_auto_config())
     try:
         data = request.json or {}
-        accounts = {g: list(dict.fromkeys(ts)) for g, ts in (data.get("accounts") or {}).items()}
+        accounts = list(dict.fromkeys(
+            t.strip().lstrip("@") for t in (data.get("accounts") or []) if t and t.strip()
+        ))
+        account_set = set(accounts)
+        assignments = {
+            g: [t for t in dict.fromkeys(ts) if t in account_set]
+            for g, ts in (data.get("assignments") or {}).items()
+        }
         cleaned = {
             "comments": [c for c in (data.get("comments") or []) if c.strip()],
             "accounts": accounts,
+            "assignments": assignments,
             "delay_between_targets_s": data.get("delay_between_targets_s", [25, 70]),
             "delay_between_accounts_s": data.get("delay_between_accounts_s", [60, 180]),
         }
@@ -447,6 +480,11 @@ def api_auto_comment_job(job_id):
     if not job:
         abort(404)
     return jsonify(job)
+
+
+@app.route("/api/web-credentials")
+def api_web_credentials():
+    return jsonify({"names": _load_web_credential_names()})
 
 
 @app.route("/api/personas")

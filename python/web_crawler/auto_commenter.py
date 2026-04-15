@@ -31,6 +31,7 @@ import argparse
 import json
 import logging
 import random
+import threading
 import time
 
 from playwright.sync_api import Page, sync_playwright
@@ -119,98 +120,131 @@ def _process_account_on_page(page: Page, account_name: str, targets: list[str],
     return stats
 
 
+def _process_one_account(worker_id: int, name: str, targets: list[str],
+                         comments: list[str], between_targets,
+                         dry_run: bool) -> dict:
+    """Open `name`'s own session, post comments, persist state, close."""
+    log.info(f"[worker{worker_id}] === Starting {name} ({len(targets)} targets) ===")
+    try:
+        web.ensure_session(name)
+    except Exception as e:
+        log.exception(f"[worker{worker_id}][{name}] ensure_session failed: {e}")
+        return {"account": name, "attempted": 0, "succeeded": 0,
+                "failed": [{"target": "<session>", "reason": str(e)}]}
+
+    with sync_playwright() as p:
+        try:
+            context, page = web.open_authenticated_page(p, name)
+        except RuntimeError as e:
+            log.warning(f"[worker{worker_id}][{name}] session rejected ({e}) — re-logging in")
+            try:
+                web.login(name)
+                context, page = web.open_authenticated_page(p, name)
+            except Exception as e2:
+                log.exception(f"[worker{worker_id}][{name}] login failed: {e2}")
+                return {"account": name, "attempted": 0, "succeeded": 0,
+                        "failed": [{"target": "<login>", "reason": str(e2)}]}
+
+        try:
+            picker = _make_comment_picker(comments)
+            stats = _process_account_on_page(
+                page, name, targets, picker, between_targets, dry_run,
+            )
+            log.info(f"[worker{worker_id}] === {name} done: "
+                     f"{stats['succeeded']}/{stats['attempted']} ok, "
+                     f"{len(stats['failed'])} failed ===")
+            return stats
+        finally:
+            try:
+                state_file = web._session_path(name)
+                context.storage_state(path=str(state_file))
+            except Exception:
+                pass
+            context.close()
+
+
+def _worker_loop(worker_id: int, queue: list[tuple[str, list[str]]],
+                 queue_lock: threading.Lock, comments: list[str],
+                 between_targets, between_accounts, dry_run: bool,
+                 out_stats: list[dict], stats_lock: threading.Lock) -> None:
+    """Pull accounts off the shared queue one at a time until empty."""
+    first = True
+    while True:
+        with queue_lock:
+            if not queue:
+                return
+            name, targets = queue.pop(0)
+
+        if not first:
+            delay = _pick_delay(between_accounts, (60.0, 180.0))
+            log.info(f"[worker{worker_id}] waiting {delay:.1f}s before next account")
+            time.sleep(delay)
+        first = False
+
+        if not targets:
+            log.info(f"[worker{worker_id}][{name}] no targets — skipping")
+            result = {"account": name, "attempted": 0, "succeeded": 0, "failed": []}
+        else:
+            try:
+                result = _process_one_account(
+                    worker_id, name, targets, comments, between_targets, dry_run,
+                )
+            except Exception as e:
+                log.exception(f"[worker{worker_id}][{name}] crashed: {e}")
+                result = {"account": name, "attempted": 0, "succeeded": 0,
+                          "failed": [{"target": "<worker>", "reason": str(e)}]}
+
+        with stats_lock:
+            out_stats.append(result)
+
+
 def run(config_path: Path = DEFAULT_CONFIG_PATH,
         only_account: str | None = None,
-        dry_run: bool = False) -> list[dict]:
+        dry_run: bool = False,
+        parallel_workers: int = 2) -> list[dict]:
     cfg = _load_config(config_path)
     comments: list[str] = cfg.get("comments", [])
-    accounts_cfg: dict[str, list[str]] = cfg.get("accounts", {})
+    # New shape: {"assignments": {girl: [targets]}}. Legacy: {"accounts": {...}}.
+    accounts_cfg: dict[str, list[str]] = cfg.get("assignments") or cfg.get("accounts") or {}
     between_targets = cfg.get("delay_between_targets_s", [25, 70])
     between_accounts = cfg.get("delay_between_accounts_s", [60, 180])
 
     if not comments:
         raise ValueError("Config has empty 'comments' bank")
     if not accounts_cfg:
-        raise ValueError("Config has no 'accounts' entries")
+        raise ValueError("Config has no 'assignments' entries")
 
-    items = list(accounts_cfg.items())
+    items = [(n, t) for n, t in accounts_cfg.items() if t]
     if only_account:
         items = [(n, t) for (n, t) in items if n == only_account]
         if not items:
             raise KeyError(f"Account {only_account!r} not found in config")
+    if not items:
+        return []
 
-    # Always anchor the browser session on valentina_vixen — her storage_state
-    # holds the multi-login roster for every other account. If valentina isn't
-    # in `items` (e.g. --account filtered her out), we still open her session
-    # and switch away from her before doing any work.
-    ANCHOR = "valentina_vixen"
-    anchor_in_items = any(n == ANCHOR for n, _ in items)
-    if anchor_in_items:
-        anchor_idx = next(i for i, (n, _) in enumerate(items) if n == ANCHOR)
-        if anchor_idx != 0:
-            items.insert(0, items.pop(anchor_idx))
-    first_account = ANCHOR
-    # Anchor session must exist — log in if it doesn't
-    web.ensure_session(first_account)
-
+    n_workers = max(1, min(parallel_workers, len(items)))
+    queue: list[tuple[str, list[str]]] = list(items)
+    queue_lock = threading.Lock()
     all_stats: list[dict] = []
+    stats_lock = threading.Lock()
 
-    with sync_playwright() as p:
-        try:
-            context, page = web.open_authenticated_page(p, first_account)
-        except RuntimeError as e:
-            log.warning(f"[{first_account}] session rejected ({e}) — re-logging in")
-            web.login(first_account)
-            context, page = web.open_authenticated_page(p, first_account)
+    log.info(f"Starting {n_workers} parallel worker(s) for {len(items)} account(s)")
 
-        try:
-            for idx, (name, targets) in enumerate(items):
-                log.info(f"=== Starting account {name} ({len(targets)} targets) ===")
-
-                # Switch from the anchor (or prior account) to this one, unless
-                # we're already on it (i.e. idx 0 and anchor is in items).
-                need_switch = not (idx == 0 and anchor_in_items and name == ANCHOR)
-                if need_switch:
-                    switched = False
-                    try:
-                        switched = web.switch_account(page, name)
-                    except Exception as e:
-                        log.exception(f"[{name}] switch_account raised: {e}")
-                    if not switched:
-                        log.error(f"[{name}] could not switch — skipping account")
-                        all_stats.append({
-                            "account": name, "attempted": 0, "succeeded": 0,
-                            "failed": [{"target": "<switch>", "reason": "switch_account failed"}],
-                        })
-                        continue
-
-                picker = _make_comment_picker(comments)
-
-                if not targets:
-                    log.info(f"[{name}] no targets — skipping")
-                    all_stats.append({"account": name, "attempted": 0,
-                                      "succeeded": 0, "failed": []})
-                else:
-                    stats = _process_account_on_page(
-                        page, name, targets, picker, between_targets, dry_run,
-                    )
-                    all_stats.append(stats)
-                    log.info(f"=== {name} done: {stats['succeeded']}/{stats['attempted']} ok, "
-                             f"{len(stats['failed'])} failed ===")
-
-                if idx < len(items) - 1:
-                    delay = _pick_delay(between_accounts, (60.0, 180.0))
-                    log.info(f"Waiting {delay:.1f}s before next account")
-                    time.sleep(delay)
-        finally:
-            # Persist session state for the first account on the way out
-            try:
-                state_file = web._session_path(first_account)
-                context.storage_state(path=str(state_file))
-            except Exception:
-                pass
-            context.close()
-
+    threads: list[threading.Thread] = []
+    for wid in range(n_workers):
+        t = threading.Thread(
+            target=_worker_loop,
+            args=(wid, queue, queue_lock, comments, between_targets,
+                  between_accounts, dry_run, all_stats, stats_lock),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+        # Small stagger so browsers don't collide opening IG at the same instant
+        if wid < n_workers - 1:
+            time.sleep(1.5)
+    for t in threads:
+        t.join()
     return all_stats
 
 
@@ -222,6 +256,8 @@ def main():
                         help="Run only for this account name")
     parser.add_argument("--dry-run", action="store_true",
                         help="Log actions without posting comments")
+    parser.add_argument("--workers", type=int, default=2,
+                        help="Number of parallel browser sessions (default 2)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -230,7 +266,8 @@ def main():
         stream=sys.stdout,
     )
 
-    results = run(args.config, only_account=args.account, dry_run=args.dry_run)
+    results = run(args.config, only_account=args.account, dry_run=args.dry_run,
+                  parallel_workers=args.workers)
     total_ok = sum(r["succeeded"] for r in results)
     total_try = sum(r["attempted"] for r in results)
     log.info(f"ALL DONE — {total_ok}/{total_try} comments posted across "

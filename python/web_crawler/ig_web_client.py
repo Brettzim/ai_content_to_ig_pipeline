@@ -615,6 +615,51 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
         return False
 
 
+def _dismiss_switch_error(page: Page) -> None:
+    """
+    Freshly-reactivated accounts sometimes show a "Sorry, something went wrong"
+    dialog right after the switch. IG wants two clicks: OK to dismiss, then
+    Reload to retry the profile fetch. Both are best-effort — if neither
+    button is present, we assume the switch went through cleanly.
+    """
+    dismissed = False
+    for label in ("OK", "Ok", "Dismiss"):
+        if dismissed:
+            break
+        for sel in (
+            f'div[role="dialog"] div[role="button"]:has-text("{label}")',
+            f'div[role="dialog"] button:has-text("{label}")',
+            f'button:has-text("{label}")',
+        ):
+            try:
+                page.locator(sel).first.click(timeout=400)
+                log.info(f"[switch_account] dismissed error dialog via {label}")
+                dismissed = True
+                break
+            except Exception:
+                continue
+    if not dismissed:
+        return
+
+    page.wait_for_timeout(200)
+    for sel in (
+        'div[role="button"]:has-text("Reload page")',
+        'button:has-text("Reload page")',
+        'div[role="button"]:has-text("Reload")',
+        'button:has-text("Reload")',
+    ):
+        try:
+            page.locator(sel).first.click(timeout=600)
+            log.info(f"[switch_account] clicked Reload after error")
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+            return
+        except Exception:
+            continue
+
+
 def switch_account(page: Page, target_account_name: str) -> bool:
     """
     Use IG's native "Switch accounts" flow to hop to another account on the
@@ -709,16 +754,31 @@ def switch_account(page: Page, target_account_name: str) -> bool:
 
     _human_delay(2.0, 3.5)
 
-    # Step 3: verify the home feed loads
-    try:
-        page.wait_for_selector('svg[aria-label="Home"]', timeout=15000)
-        log.info(f"[switch_account] switched to {target_username}")
-        return True
-    except Exception:
-        shot = config.SESSIONS_DIR / target_account_name / "switch_verify_failed.png"
-        page.screenshot(path=str(shot), full_page=True)
-        log.error(f"Home feed not visible after switch — screenshot: {shot}")
-        return False
+    # Step 2.5: some freshly-reactivated accounts show a "Sorry, something
+    # went wrong" dialog immediately after the switch. The profile loads fine
+    # once you dismiss OK and then press Reload. Handle both buttons if present.
+    _dismiss_switch_error(page)
+
+    # Step 3: verify the home feed loads. Reactivated accounts can take longer
+    # after the Reload click, so retry with a fallback goto(IG_URL).
+    for attempt in range(2):
+        try:
+            page.wait_for_selector('svg[aria-label="Home"]', timeout=20000)
+            log.info(f"[switch_account] switched to {target_username}")
+            return True
+        except Exception:
+            if attempt == 0:
+                log.info(f"[switch_account] Home svg not visible, retrying via goto")
+                try:
+                    page.goto(IG_URL, wait_until="domcontentloaded", timeout=20000)
+                    _human_delay(1.5, 2.5)
+                except Exception:
+                    pass
+                continue
+            shot = config.SESSIONS_DIR / target_account_name / "switch_verify_failed.png"
+            page.screenshot(path=str(shot), full_page=True)
+            log.error(f"Home feed not visible after switch — screenshot: {shot}")
+            return False
 
 
 def close_post_view(page: Page) -> None:

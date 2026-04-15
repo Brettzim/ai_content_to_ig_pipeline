@@ -79,7 +79,7 @@
     <div class="card">
       <div class="bar">
         <h2 style="margin:0;">Targets × Girls</h2>
-        <div style="font-size:11px;color:#8a8580;">Check a cell → that girl will comment on that target</div>
+        <div style="font-size:11px;color:#8a8580;">Rows = <code>accounts</code> in auto_comment_config · Columns = names in <code>web_credentials.json</code></div>
       </div>
       <div style="overflow:auto;">
         <table id="grid">
@@ -129,19 +129,22 @@
   </main>
 
   <script>
-    let state = { comments: [], accounts: {}, targets: [], delay_t: [25,70], delay_a: [60,180] };
+    let state = { comments: [], assignments: {}, accounts: [], girls: [], delay_t: [25,70], delay_a: [60,180] };
     let personas = {};
     let pollTimer = null;
     let currentJob = null;
 
     async function load() {
-      const [cfg, p] = await Promise.all([
+      const [cfg, p, creds] = await Promise.all([
         fetch('/api/auto-comment/config').then(r=>r.json()),
         fetch('/api/personas').then(r=>r.json()),
+        fetch('/api/web-credentials').then(r=>r.json()),
       ]);
       personas = p;
+      state.girls = (creds.names || []).slice().sort();
       state.comments = cfg.comments || [];
-      state.accounts = cfg.accounts || {};
+      state.assignments = cfg.assignments || {};
+      state.accounts = (cfg.accounts || []).slice();
       state.delay_t = cfg.delay_between_targets_s || [25,70];
       state.delay_a = cfg.delay_between_accounts_s || [60,180];
       document.getElementById('comments').value = state.comments.join('\n');
@@ -149,28 +152,28 @@
       document.getElementById('delay_t_hi').value = state.delay_t[1];
       document.getElementById('delay_a_lo').value = state.delay_a[0];
       document.getElementById('delay_a_hi').value = state.delay_a[1];
-      for (const g of Object.keys(personas)) if (!state.accounts[g]) state.accounts[g] = [];
-      // seed targets universe from union of all existing lists
-      const s = new Set();
-      for (const list of Object.values(state.accounts)) list.forEach(t => s.add(t));
-      state.targets = Array.from(s).sort();
+      for (const g of state.girls) if (!state.assignments[g]) state.assignments[g] = [];
       renderGrid();
     }
 
     function renderGrid() {
-      const girls = Object.keys(personas).sort();
-      const targets = state.targets;
+      const girls = state.girls;
+      const accounts = state.accounts;
       const head = document.getElementById('grid-head');
       const body = document.getElementById('grid-body');
+      const allOn = g => accounts.length > 0 && accounts.every(t => (state.assignments[g]||[]).includes(t));
       head.innerHTML = '<th class="target-col">Target</th>' +
-        girls.map(g => `<th>${personas[g].display_name}</th>`).join('') +
+        girls.map(g => `<th>
+            <div>${(personas[g] && personas[g].display_name) || g.replace(/_/g,' ')}</div>
+            <input type="checkbox" title="toggle all for this girl" data-g="${g}" ${allOn(g)?'checked':''} onchange="toggleColumn(this)" style="margin-top:4px;">
+          </th>`).join('') +
         '<th></th>';
-      body.innerHTML = targets.length === 0
+      body.innerHTML = accounts.length === 0
         ? `<tr><td colspan="${girls.length+2}" style="color:#6a6560;padding:22px;">No targets yet — add one below.</td></tr>`
-        : targets.map(t => `
+        : accounts.map(t => `
             <tr>
               <td class="target-col">${t}</td>
-              ${girls.map(g => `<td><input type="checkbox" data-t="${t}" data-g="${g}" ${state.accounts[g].includes(t)?'checked':''} onchange="toggle(this)"></td>`).join('')}
+              ${girls.map(g => `<td><input type="checkbox" data-t="${t}" data-g="${g}" ${(state.assignments[g]||[]).includes(t)?'checked':''} onchange="toggle(this)"></td>`).join('')}
               <td><button class="remove-btn" title="remove target" onclick="removeTarget('${t}')">×</button></td>
             </tr>
           `).join('');
@@ -178,26 +181,31 @@
 
     function toggle(cb) {
       const t = cb.dataset.t, g = cb.dataset.g;
-      const list = state.accounts[g] || (state.accounts[g] = []);
+      const list = state.assignments[g] || (state.assignments[g] = []);
       const i = list.indexOf(t);
       if (cb.checked && i < 0) list.push(t);
       if (!cb.checked && i >= 0) list.splice(i, 1);
+    }
+
+    function toggleColumn(cb) {
+      const g = cb.dataset.g;
+      state.assignments[g] = cb.checked ? state.accounts.slice() : [];
+      renderGrid();
     }
 
     function addTarget() {
       const inp = document.getElementById('new-target');
       const v = (inp.value || '').trim().replace(/^@/, '');
       inp.value = '';
-      if (!v || state.targets.includes(v)) return;
-      state.targets.push(v);
-      state.targets.sort();
+      if (!v || state.accounts.includes(v)) return;
+      state.accounts.push(v);
       renderGrid();
     }
 
     function removeTarget(t) {
-      state.targets = state.targets.filter(x => x !== t);
-      for (const g of Object.keys(state.accounts)) {
-        state.accounts[g] = state.accounts[g].filter(x => x !== t);
+      state.accounts = state.accounts.filter(x => x !== t);
+      for (const g of Object.keys(state.assignments)) {
+        state.assignments[g] = (state.assignments[g] || []).filter(x => x !== t);
       }
       renderGrid();
     }
@@ -216,6 +224,7 @@
       return {
         comments,
         accounts: state.accounts,
+        assignments: state.assignments,
         delay_between_targets_s: delay_t,
         delay_between_accounts_s: delay_a,
       };
