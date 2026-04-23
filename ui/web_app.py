@@ -682,4 +682,4 @@ if __name__ == "__main__":
     )
     config.EDITED_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
     config.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-    app.run(debug=True, port=5000, threaded=True, use_reloader=False)
+    app.run(debug=True, host="0.0.0.0", port=5000, threaded=True, use_reloader=False)

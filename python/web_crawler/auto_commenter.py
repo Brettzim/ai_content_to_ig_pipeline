@@ -85,10 +85,8 @@ def _process_account_on_page(page: Page, account_name: str, targets: list[str],
     for t_idx, target in enumerate(targets):
         comment_text = pick_comment()
         stats["attempted"] += 1
-        log.info(f"[{account_name}] → target={target!r}  comment={comment_text!r}")
 
         if dry_run:
-            log.info(f"[{account_name}] (dry-run) would comment on {target}")
             stats["succeeded"] += 1
             continue
 
@@ -103,32 +101,28 @@ def _process_account_on_page(page: Page, account_name: str, targets: list[str],
             posted = web._post_comment(page, comment_text, account_name)
             if posted:
                 stats["succeeded"] += 1
-                log.info(f"[{account_name}] ✓ commented on {target}")
+                log.info(f"[{account_name}] commented on {target}: \"{comment_text}\"")
             else:
                 stats["failed"].append({"target": target, "reason": "comment_submit_failed"})
         except Exception as e:
-            log.exception(f"[{account_name}] target {target!r} crashed: {e}")
             stats["failed"].append({"target": target, "reason": str(e)})
         finally:
             web.close_post_view(page)
 
         if t_idx < len(targets) - 1:
             delay = _pick_delay(delay_between_targets, (25.0, 70.0))
-            log.info(f"[{account_name}] waiting {delay:.1f}s before next target")
             time.sleep(delay)
 
     return stats
 
 
-def _process_one_account(worker_id: int, name: str, targets: list[str],
+def _process_one_account(name: str, targets: list[str],
                          comments: list[str], between_targets,
                          dry_run: bool) -> dict:
     """Open `name`'s own session, post comments, persist state, close."""
-    log.info(f"[worker{worker_id}] === Starting {name} ({len(targets)} targets) ===")
     try:
         web.ensure_session(name)
     except Exception as e:
-        log.exception(f"[worker{worker_id}][{name}] ensure_session failed: {e}")
         return {"account": name, "attempted": 0, "succeeded": 0,
                 "failed": [{"target": "<session>", "reason": str(e)}]}
 
@@ -136,12 +130,10 @@ def _process_one_account(worker_id: int, name: str, targets: list[str],
         try:
             context, page = web.open_authenticated_page(p, name)
         except RuntimeError as e:
-            log.warning(f"[worker{worker_id}][{name}] session rejected ({e}) — re-logging in")
             try:
                 web.login(name)
                 context, page = web.open_authenticated_page(p, name)
             except Exception as e2:
-                log.exception(f"[worker{worker_id}][{name}] login failed: {e2}")
                 return {"account": name, "attempted": 0, "succeeded": 0,
                         "failed": [{"target": "<login>", "reason": str(e2)}]}
 
@@ -150,9 +142,6 @@ def _process_one_account(worker_id: int, name: str, targets: list[str],
             stats = _process_account_on_page(
                 page, name, targets, picker, between_targets, dry_run,
             )
-            log.info(f"[worker{worker_id}] === {name} done: "
-                     f"{stats['succeeded']}/{stats['attempted']} ok, "
-                     f"{len(stats['failed'])} failed ===")
             return stats
         finally:
             try:
@@ -163,7 +152,7 @@ def _process_one_account(worker_id: int, name: str, targets: list[str],
             context.close()
 
 
-def _worker_loop(worker_id: int, queue: list[tuple[str, list[str]]],
+def _worker_loop(queue: list[tuple[str, list[str]]],
                  queue_lock: threading.Lock, comments: list[str],
                  between_targets, between_accounts, dry_run: bool,
                  out_stats: list[dict], stats_lock: threading.Lock) -> None:
@@ -177,20 +166,17 @@ def _worker_loop(worker_id: int, queue: list[tuple[str, list[str]]],
 
         if not first:
             delay = _pick_delay(between_accounts, (60.0, 180.0))
-            log.info(f"[worker{worker_id}] waiting {delay:.1f}s before next account")
             time.sleep(delay)
         first = False
 
         if not targets:
-            log.info(f"[worker{worker_id}][{name}] no targets — skipping")
             result = {"account": name, "attempted": 0, "succeeded": 0, "failed": []}
         else:
             try:
                 result = _process_one_account(
-                    worker_id, name, targets, comments, between_targets, dry_run,
+                    name, targets, comments, between_targets, dry_run,
                 )
             except Exception as e:
-                log.exception(f"[worker{worker_id}][{name}] crashed: {e}")
                 result = {"account": name, "attempted": 0, "succeeded": 0,
                           "failed": [{"target": "<worker>", "reason": str(e)}]}
 
@@ -228,13 +214,11 @@ def run(config_path: Path = DEFAULT_CONFIG_PATH,
     all_stats: list[dict] = []
     stats_lock = threading.Lock()
 
-    log.info(f"Starting {n_workers} parallel worker(s) for {len(items)} account(s)")
-
     threads: list[threading.Thread] = []
     for wid in range(n_workers):
         t = threading.Thread(
             target=_worker_loop,
-            args=(wid, queue, queue_lock, comments, between_targets,
+            args=(queue, queue_lock, comments, between_targets,
                   between_accounts, dry_run, all_stats, stats_lock),
             daemon=True,
         )
@@ -266,12 +250,8 @@ def main():
         stream=sys.stdout,
     )
 
-    results = run(args.config, only_account=args.account, dry_run=args.dry_run,
-                  parallel_workers=args.workers)
-    total_ok = sum(r["succeeded"] for r in results)
-    total_try = sum(r["attempted"] for r in results)
-    log.info(f"ALL DONE — {total_ok}/{total_try} comments posted across "
-             f"{len(results)} account(s)")
+    run(args.config, only_account=args.account, dry_run=args.dry_run,
+        parallel_workers=args.workers)
 
 
 if __name__ == "__main__":
