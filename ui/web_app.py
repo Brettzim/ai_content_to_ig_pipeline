@@ -15,42 +15,155 @@ import _pathsetup  # noqa: F401  — injects grok/, meta_api/, web_crawler/ into
 import json
 import logging
 import random
+import secrets
 import threading
 import uuid
 import requests
-from flask import Flask, abort, jsonify, render_template, request, send_from_directory
+from flask import (
+    Flask, abort, jsonify, redirect, render_template, request,
+    send_from_directory, session, url_for,
+)
+from werkzeug.security import check_password_hash
 
 import config
 import auto_commenter
 from instagram_client import IGAccount, InstagramClient
 from xai_client import XAIClient
 
-AUTO_COMMENT_CONFIG_PATH = config.PERSONAS_DIR / "auto_comment_config.json"
-WEB_CREDENTIALS_PATH = config.PERSONAS_DIR / "web_credentials.json"
+USERS_FILE = config.AI_DIR / "users.json"
 
 app = Flask(__name__)
+app.secret_key = config.WEB_UI_SECRET or secrets.token_hex(32)
+app.permanent_session_lifetime = 60 * 60 * 24 * 30  # 30 days
 log = logging.getLogger(__name__)
 
-# ── Directories ───────────────────────────────────────────────────────────────
 
-PERSONAS_DIR = config.PERSONAS_DIR
+# ── Per-user paths ────────────────────────────────────────────────────────────
+
+def _load_users() -> list[dict]:
+    if not USERS_FILE.exists():
+        return []
+    with open(USERS_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _find_user(username: str) -> dict | None:
+    for u in _load_users():
+        if u.get("username") == username:
+            return u
+    return None
+
+
+def _user_dir(username: str | None = None) -> Path:
+    u = username or session.get("username")
+    if not u:
+        abort(401)
+    p = config.AI_DIR / "users" / u
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "personas").mkdir(exist_ok=True)
+    return p
+
+
+def _user_personas_dir(username: str | None = None) -> Path:
+    return _user_dir(username) / "personas"
+
+
+def _user_accounts_file(username: str | None = None) -> Path:
+    p = _user_dir(username) / "accounts.json"
+    if not p.exists():
+        p.write_text("[]", encoding="utf-8")
+    return p
+
+
+def _user_web_creds_file(username: str | None = None) -> Path:
+    p = _user_dir(username) / "web_credentials.json"
+    if not p.exists():
+        p.write_text("[]", encoding="utf-8")
+    return p
+
+
+def _user_auto_comment_config(username: str | None = None) -> Path:
+    p = _user_dir(username) / "auto_comment_config.json"
+    if not p.exists():
+        p.write_text(json.dumps({
+            "comments": [], "accounts": [], "assignments": {},
+            "delay_between_targets_s": [25, 70],
+            "delay_between_accounts_s": [60, 180],
+        }), encoding="utf-8")
+    return p
+
+
+def _user_sessions_dir(username: str | None = None) -> Path:
+    u = username or session.get("username")
+    if not u:
+        abort(401)
+    p = config.SESSIONS_DIR / u
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+_PUBLIC_ENDPOINTS = {"login", "static"}
+
+
+def _auth_enabled() -> bool:
+    return bool(_load_users())
+
+
+@app.before_request
+def _require_login():
+    if not _auth_enabled():
+        return
+    if request.endpoint in _PUBLIC_ENDPOINTS:
+        return
+    if session.get("authed"):
+        return
+    if request.path.startswith("/api/") or request.path.startswith("/media/"):
+        abort(401)
+    return redirect(url_for("login", next=request.path))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not _auth_enabled():
+        return redirect(url_for("index"))
+    error = None
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        user = _find_user(username)
+        if user and check_password_hash(user.get("password_hash", ""), password):
+            session.permanent = True
+            session["authed"] = True
+            session["username"] = username
+            nxt = request.args.get("next") or url_for("index")
+            if not nxt.startswith("/"):
+                nxt = url_for("index")
+            return redirect(nxt)
+        error = "Incorrect username or password"
+    return render_template("login.html", error=error), (401 if error else 200)
+
+
+@app.route("/logout", methods=["POST", "GET"])
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+# ── Shared dirs ───────────────────────────────────────────────────────────────
+
 PROMPT_ENG_DIR = config.PROMPT_ENG_DIR
 
-def _discover_personas() -> dict:
-    """
-    Build the PERSONAS dict dynamically from folders in personas/.
-    Each folder must contain a headshot.png. Display name is derived
-    from the folder name (e.g. rachel_key → Rachel Key).
-    Reference images (left_profile.png, right_profile.png) are picked
-    up automatically if present.
-    """
+def _discover_personas(personas_dir: Path) -> dict:
+    """Discover personas in the given dir (per-user)."""
     personas = {}
-    for folder in sorted(PERSONAS_DIR.iterdir()):
+    if not personas_dir.exists():
+        return personas
+    for folder in sorted(personas_dir.iterdir()):
         if not folder.is_dir():
             continue
         headshot = folder / "headshot.png"
         if not headshot.exists():
-            # Try jpeg variant
             headshot = folder / "headshot.jpeg"
         if not headshot.exists():
             continue
@@ -58,7 +171,6 @@ def _discover_personas() -> dict:
         key = folder.name
         display_name = key.replace("_", " ").title()
 
-        # Build refs list: headshot first, then any profile images
         refs = [f"{key}/{headshot.name}"]
         for profile in ["left_profile.png", "right_profile.png"]:
             if (folder / profile).exists():
@@ -71,14 +183,10 @@ def _discover_personas() -> dict:
     return personas
 
 
-PERSONAS = _discover_personas()
-
-
-def _load_persona_guide(persona_key: str) -> str:
-    # Try subfolder first (new layout), then root (legacy)
-    path = PERSONAS_DIR / persona_key / f"{persona_key}.md"
+def _load_persona_guide(personas_dir: Path, persona_key: str) -> str:
+    path = personas_dir / persona_key / f"{persona_key}.md"
     if not path.exists():
-        path = PERSONAS_DIR / f"{persona_key}.md"
+        path = personas_dir / f"{persona_key}.md"
     if not path.exists():
         raise FileNotFoundError(f"Persona guide not found for: {persona_key}")
     return path.read_text(encoding="utf-8")
@@ -115,9 +223,8 @@ def _load_reel_instructions(reel_mode: str) -> str:
 HISTORY_MAX = 10  # number of recent prompts to feed back to the LLM
 
 
-def _load_history(persona_key: str) -> list[str]:
-    """Load recent scene prompts for this persona."""
-    path = PERSONAS_DIR / persona_key / "history.json"
+def _load_history(personas_dir: Path, persona_key: str) -> list[str]:
+    path = personas_dir / persona_key / "history.json"
     if not path.exists():
         return []
     try:
@@ -127,25 +234,24 @@ def _load_history(persona_key: str) -> list[str]:
         return []
 
 
-def _save_history(persona_key: str, scene_prompt: str):
-    """Append a scene prompt to this persona's history."""
-    path = PERSONAS_DIR / persona_key / "history.json"
-    history = _load_history(persona_key)
+def _save_history(personas_dir: Path, persona_key: str, scene_prompt: str):
+    path = personas_dir / persona_key / "history.json"
+    history = _load_history(personas_dir, persona_key)
     history.append(scene_prompt)
-    # Keep only the last HISTORY_MAX entries
     history = history[-HISTORY_MAX:]
     path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
 
-def _generate_prompts_ai(persona_key: str, post_type: str) -> dict:
+def _generate_prompts_ai(personas_dir: Path, persona_key: str, post_type: str) -> dict:
     workflow = _load_workflow()
-    guide = _load_persona_guide(persona_key)
+    guide = _load_persona_guide(personas_dir, persona_key)
     engagement = _load_engagement_guide()
     creative_direction = _load_creative_direction()
     video_workflow = _load_video_workflow() if post_type == "reel" else ""
-    p = PERSONAS[persona_key]
+    personas = _discover_personas(personas_dir)
+    p = personas[persona_key]
     display_name = p["display_name"]
-    history = _load_history(persona_key)
+    history = _load_history(personas_dir, persona_key)
 
     video_field = '"video_prompt": "...",' if post_type == "reel" else ""
 
@@ -265,7 +371,7 @@ Return ONLY valid JSON (no markdown, no explanation):
     if content.startswith("```"):
         content = content.split("\n", 1)[1].rsplit("```", 1)[0]
     result = json.loads(content.strip())
-    _save_history(persona_key, result["scene_prompt"])
+    _save_history(personas_dir, persona_key, result["scene_prompt"])
     return result
 
 
@@ -278,10 +384,11 @@ def _run_generate(job_id: str):
     job = _jobs[job_id]
     try:
         xai = XAIClient()
-        p = PERSONAS[job["persona"]]
+        personas_dir = _user_personas_dir(job["username"])
+        p = _discover_personas(personas_dir)[job["persona"]]
 
         # Use headshot as reference for face consistency
-        headshot = PERSONAS_DIR / p["refs"][0]
+        headshot = personas_dir / p["refs"][0]
 
         job["status"] = "editing_image"
         result = xai.edit_image(
@@ -314,7 +421,7 @@ def _run_post(job_id: str):
     job = _jobs[job_id]
     try:
         job["post_status"] = "posting"
-        with open(config.ACCOUNTS_FILE, encoding="utf-8") as f:
+        with open(_user_accounts_file(job["username"]), encoding="utf-8") as f:
             accounts = {a["name"]: a for a in json.load(f)}
 
         raw = accounts[job["persona"]]
@@ -367,17 +474,16 @@ class _ListLogHandler(logging.Handler):
             pass
 
 
-def _load_auto_config() -> dict:
+def _load_auto_config(path: Path) -> dict:
     default = {
         "comments": [], "accounts": [], "assignments": {},
         "delay_between_targets_s": [25, 70],
         "delay_between_accounts_s": [60, 180],
     }
-    if not AUTO_COMMENT_CONFIG_PATH.exists():
+    if not path.exists():
         return default
-    with open(AUTO_COMMENT_CONFIG_PATH, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         cfg = json.load(f)
-    # Migrate legacy {"accounts": {girl: [targets]}} → assignments + accounts list
     if isinstance(cfg.get("accounts"), dict):
         legacy = cfg.pop("accounts")
         cfg.setdefault("assignments", legacy)
@@ -392,24 +498,25 @@ def _load_auto_config() -> dict:
     return cfg
 
 
-def _load_web_credential_names() -> list[str]:
-    if not WEB_CREDENTIALS_PATH.exists():
+def _load_web_credential_names(path: Path) -> list[str]:
+    if not path.exists():
         return []
-    with open(WEB_CREDENTIALS_PATH, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         creds = json.load(f)
     return [c["name"] for c in creds if c.get("name")]
 
 
-def _save_auto_config(data: dict) -> None:
-    AUTO_COMMENT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(AUTO_COMMENT_CONFIG_PATH, "w", encoding="utf-8") as f:
+def _save_auto_config(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 @app.route("/api/auto-comment/config", methods=["GET", "POST"])
 def api_auto_comment_config():
+    cfg_path = _user_auto_comment_config()
     if request.method == "GET":
-        return jsonify(_load_auto_config())
+        return jsonify(_load_auto_config(cfg_path))
     try:
         data = request.json or {}
         accounts = list(dict.fromkeys(
@@ -427,15 +534,21 @@ def api_auto_comment_config():
             "delay_between_targets_s": data.get("delay_between_targets_s", [25, 70]),
             "delay_between_accounts_s": data.get("delay_between_accounts_s", [60, 180]),
         }
-        _save_auto_config(cleaned)
+        _save_auto_config(cfg_path, cleaned)
         return jsonify({"ok": True})
     except Exception as e:
         log.exception("save auto-comment config failed")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-def _run_auto_commenter(job_id: str, dry_run: bool):
+_auto_commenter_lock = threading.Lock()
+
+
+def _run_auto_commenter(job_id: str, dry_run: bool, username: str):
     job = _auto_jobs[job_id]
+    cfg_path = _user_auto_comment_config(username)
+    creds_file = _user_web_creds_file(username)
+
     logger = logging.getLogger("auto_commenter")
     web_logger = logging.getLogger("ig_web_client")
     handler = _ListLogHandler(job["log"])
@@ -443,10 +556,23 @@ def _run_auto_commenter(job_id: str, dry_run: bool):
     logger.addHandler(handler)
     web_logger.addHandler(handler)
     try:
-        job["status"] = "running"
-        results = auto_commenter.run(AUTO_COMMENT_CONFIG_PATH, dry_run=dry_run)
-        job["results"] = results
-        job["status"] = "done"
+        with _auto_commenter_lock:
+            # Resolve sessions_dir inside the lock — config.SESSIONS_DIR is
+            # temporarily mutated below and we need the original parent here.
+            old_creds = config.WEB_CREDENTIALS_FILE
+            old_sessions = config.SESSIONS_DIR
+            sessions_dir = old_sessions / username
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            config.WEB_CREDENTIALS_FILE = creds_file
+            config.SESSIONS_DIR = sessions_dir
+            try:
+                job["status"] = "running"
+                results = auto_commenter.run(cfg_path, dry_run=dry_run)
+                job["results"] = results
+                job["status"] = "done"
+            finally:
+                config.WEB_CREDENTIALS_FILE = old_creds
+                config.SESSIONS_DIR = old_sessions
     except Exception as e:
         job["status"] = "error"
         job["error"] = str(e)
@@ -461,13 +587,15 @@ def api_auto_comment_run():
     try:
         data = request.json or {}
         dry_run = bool(data.get("dry_run"))
+        username = session.get("username") or ""
         job_id = uuid.uuid4().hex[:8]
         _auto_jobs[job_id] = {
             "id": job_id, "status": "starting",
             "results": [], "log": [], "dry_run": dry_run,
+            "username": username,
         }
         threading.Thread(
-            target=_run_auto_commenter, args=(job_id, dry_run), daemon=True,
+            target=_run_auto_commenter, args=(job_id, dry_run, username), daemon=True,
         ).start()
         return jsonify({"ok": True, "job_id": job_id})
     except Exception as e:
@@ -482,16 +610,40 @@ def api_auto_comment_job(job_id):
     return jsonify(job)
 
 
-@app.route("/api/web-credentials")
+@app.route("/api/web-credentials", methods=["GET", "POST"])
 def api_web_credentials():
-    return jsonify({"names": _load_web_credential_names()})
+    creds_file = _user_web_creds_file()
+    if request.method == "GET":
+        return jsonify({"names": _load_web_credential_names(creds_file)})
+
+    data = request.json or {}
+    ig_username = (data.get("username") or "").strip().lstrip("@")
+    ig_password = data.get("password") or ""
+    name = (data.get("name") or "").strip().lower()
+    if not name:
+        name = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in ig_username.lower())
+
+    if not ig_username or not ig_password:
+        return jsonify({"ok": False, "error": "Username and password are required"}), 400
+    if not name or not all(ch.isalnum() or ch == "_" for ch in name):
+        return jsonify({"ok": False, "error": "Name must contain only letters, numbers, and underscores"}), 400
+
+    with open(creds_file, encoding="utf-8") as f:
+        creds = json.load(f)
+    if any(c.get("name") == name for c in creds):
+        return jsonify({"ok": False, "error": f"Account '{name}' already exists"}), 409
+
+    creds.append({"name": name, "username": ig_username, "password": ig_password})
+    creds_file.write_text(json.dumps(creds, indent=2), encoding="utf-8")
+    return jsonify({"ok": True, "name": name})
 
 
 @app.route("/api/personas")
 def api_personas():
+    personas = _discover_personas(_user_personas_dir())
     return jsonify({
         k: {"display_name": v["display_name"]}
-        for k, v in PERSONAS.items()
+        for k, v in personas.items()
     })
 
 
@@ -499,7 +651,7 @@ def api_personas():
 def api_generate_prompts():
     data = request.json
     try:
-        prompts = _generate_prompts_ai(data["persona"], data["post_type"])
+        prompts = _generate_prompts_ai(_user_personas_dir(), data["persona"], data["post_type"])
         return jsonify({"ok": True, "prompts": prompts})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -516,6 +668,7 @@ def api_generate_content():
         "prompts": data["prompts"],
         "status": "starting",
         "post_status": None,
+        "username": session.get("username") or "",
     }
     threading.Thread(target=_run_generate, args=(job_id,), daemon=True).start()
     return jsonify({"job_id": job_id})
@@ -524,8 +677,9 @@ def api_generate_content():
 @app.route("/api/clear-history", methods=["POST"])
 def api_clear_history():
     try:
-        for persona_key in PERSONAS:
-            path = PERSONAS_DIR / persona_key / "history.json"
+        personas_dir = _user_personas_dir()
+        for persona_key in _discover_personas(personas_dir):
+            path = personas_dir / persona_key / "history.json"
             if path.exists():
                 path.unlink()
         return jsonify({"ok": True})
@@ -554,8 +708,9 @@ def api_post():
 @app.route("/api/dashboard")
 def api_dashboard():
     try:
-        with open(config.ACCOUNTS_FILE, encoding="utf-8") as f:
+        with open(_user_accounts_file(), encoding="utf-8") as f:
             accounts = json.load(f)
+        personas = _discover_personas(_user_personas_dir())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -598,7 +753,7 @@ def api_dashboard():
             log.warning(f"DM fetch failed for {name}: {e}")
 
         result[name] = {
-            "display_name": PERSONAS.get(name, {}).get("display_name", name),
+            "display_name": personas.get(name, {}).get("display_name", name),
             "posts": posts,
             "total_likes": sum(p.get("like_count", 0) for p in posts),
             "total_comments": sum(p.get("comments_count", 0) for p in posts),
@@ -617,7 +772,7 @@ def api_reply():
     message = data["message"]
     account_name = data["account"]
     try:
-        with open(config.ACCOUNTS_FILE, encoding="utf-8") as f:
+        with open(_user_accounts_file(), encoding="utf-8") as f:
             accounts = {a["name"]: a for a in json.load(f)}
         uid = accounts[account_name]["ig_user_id"]
         resp = requests.post(
@@ -666,7 +821,7 @@ def serve_video(filename):
 
 @app.route("/media/headshot/<persona_key>")
 def serve_headshot(persona_key):
-    folder = PERSONAS_DIR / persona_key
+    folder = _user_personas_dir() / persona_key
     for ext in ("png", "jpeg", "jpg"):
         headshot = folder / f"headshot.{ext}"
         if headshot.exists():

@@ -825,26 +825,40 @@ if __name__ == "__main__":
 
     usage = (
         "Usage:\n"
-        "  python ig_web_client.py login  <account_name>\n"
-        "  python ig_web_client.py setup  <anchor_account>   # add more accounts to session\n"
-        "  python ig_web_client.py search <account_name> <query> [comment]"
+        "  python ig_web_client.py [--user <name>] login  <account_name>\n"
+        "  python ig_web_client.py [--user <name>] setup  <anchor_account>\n"
+        "  python ig_web_client.py [--user <name>] search <account_name> <query> [comment]\n"
+        "(--user defaults to 'brett')"
     )
-    if len(sys.argv) < 3:
+
+    argv = sys.argv[1:]
+    user = "brett"
+    if argv and argv[0] == "--user":
+        if len(argv) < 2:
+            print(usage); sys.exit(1)
+        user = argv[1]
+        argv = argv[2:]
+
+    user_dir = config.AI_DIR / "users" / user
+    config.WEB_CREDENTIALS_FILE = user_dir / "web_credentials.json"
+    config.SESSIONS_DIR = config.SESSIONS_DIR / user
+
+    if len(argv) < 2:
         print(usage)
         sys.exit(1)
 
-    cmd = sys.argv[1]
+    cmd = argv[0]
     try:
         if cmd == "login":
-            login(sys.argv[2])
+            login(argv[1])
         elif cmd == "setup":
-            setup_multi_login(sys.argv[2])
+            setup_multi_login(argv[1])
         elif cmd == "search":
-            if len(sys.argv) < 4:
+            if len(argv) < 3:
                 print(usage)
                 sys.exit(1)
-            comment_arg = sys.argv[4] if len(sys.argv) >= 5 else None
-            search(sys.argv[2], sys.argv[3], comment=comment_arg)
+            comment_arg = argv[3] if len(argv) >= 4 else None
+            search(argv[1], argv[2], comment=comment_arg)
         else:
             print(usage)
             sys.exit(1)

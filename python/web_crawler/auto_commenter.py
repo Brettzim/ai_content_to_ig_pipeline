@@ -41,7 +41,7 @@ import ig_web_client as web
 
 log = logging.getLogger("auto_commenter")
 
-DEFAULT_CONFIG_PATH = config.PERSONAS_DIR / "auto_comment_config.json"
+DEFAULT_USER = "brett"
 
 
 def _load_config(path: Path) -> dict:
@@ -184,7 +184,7 @@ def _worker_loop(queue: list[tuple[str, list[str]]],
             out_stats.append(result)
 
 
-def run(config_path: Path = DEFAULT_CONFIG_PATH,
+def run(config_path: Path,
         only_account: str | None = None,
         dry_run: bool = False,
         parallel_workers: int = 2) -> list[dict]:
@@ -234,8 +234,10 @@ def run(config_path: Path = DEFAULT_CONFIG_PATH,
 
 def main():
     parser = argparse.ArgumentParser(description="Instagram auto-commenter")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH,
-                        help="Path to auto_comment_config.json")
+    parser.add_argument("--user", type=str, default=DEFAULT_USER,
+                        help=f"User whose data to use (default: {DEFAULT_USER})")
+    parser.add_argument("--config", type=Path, default=None,
+                        help="Path to auto_comment_config.json (default: <user>/auto_comment_config.json)")
     parser.add_argument("--account", type=str, default=None,
                         help="Run only for this account name")
     parser.add_argument("--dry-run", action="store_true",
@@ -250,7 +252,12 @@ def main():
         stream=sys.stdout,
     )
 
-    run(args.config, only_account=args.account, dry_run=args.dry_run,
+    user_dir = config.AI_DIR / "users" / args.user
+    config.WEB_CREDENTIALS_FILE = user_dir / "web_credentials.json"
+    config.SESSIONS_DIR = config.SESSIONS_DIR / args.user
+    cfg_path = args.config or (user_dir / "auto_comment_config.json")
+
+    run(cfg_path, only_account=args.account, dry_run=args.dry_run,
         parallel_workers=args.workers)
 
 

@@ -45,6 +45,13 @@ SESSIONS_DIR         = Path(os.getenv("SESSIONS_DIR",         BASE_DIR / "python
 WEB_HEADLESS         = os.getenv("WEB_HEADLESS", "false").lower() == "true"
 
 # ------------------------------------------------------------------ #
+#  UI auth (Flask)                                                    #
+# ------------------------------------------------------------------ #
+WEB_UI_USERNAME = os.getenv("WEB_UI_USERNAME", "")
+WEB_UI_PASSWORD = os.getenv("WEB_UI_PASSWORD", "")
+WEB_UI_SECRET   = os.getenv("WEB_UI_SECRET", "")
+
+# ------------------------------------------------------------------ #
 #  Content directories                                                #
 # ------------------------------------------------------------------ #
 PERSONAS_DIR      = Path(os.getenv("PERSONAS_DIR",      AI_DIR / "personas"))
