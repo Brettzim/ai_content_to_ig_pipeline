@@ -82,6 +82,7 @@ def _new_context(p: Playwright, storage_state: Optional[Path]) -> BrowserContext
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--no-sandbox",
+            "--disable-dev-shm-usage",  # required on Linux servers where /dev/shm is small
         ],
     )
     context = browser.new_context(
@@ -123,12 +124,12 @@ def login(account_name: str) -> None:
         stealth_sync(page)
 
         if state_file.exists() and _is_logged_in(page):
-            log.info(f"[{account_name}] already logged in — session reused")
+            log.debug(f"[{account_name}] already logged in — session reused")
             context.storage_state(path=str(state_file))
             context.close()
             return
 
-        log.info(f"[{account_name}] no valid session — performing login")
+        log.debug(f"[{account_name}] no valid session — performing login")
         page.goto(IG_LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
         _human_delay(2.0, 3.5)
 
@@ -142,7 +143,7 @@ def login(account_name: str) -> None:
         ):
             try:
                 page.get_by_role("button", name=btn_name).click(timeout=2000)
-                log.info(f"[{account_name}] clicked consent button: {btn_name}")
+                log.debug(f"[{account_name}] clicked consent button: {btn_name}")
                 _human_delay(0.8, 1.5)
                 break
             except Exception:
@@ -161,7 +162,7 @@ def login(account_name: str) -> None:
             try:
                 loc.wait_for(state="visible", timeout=8000)
                 username_input = loc
-                log.info(f"[{account_name}] matched username via: {sel}")
+                log.debug(f"[{account_name}] matched username via: {sel}")
                 break
             except Exception:
                 continue
@@ -200,7 +201,7 @@ def login(account_name: str) -> None:
                 break
             except Exception:
                 continue
-        log.info(f"[{account_name}] submitted credentials — waiting for home or challenge")
+        log.debug(f"[{account_name}] submitted credentials — waiting for home or challenge")
 
         # Wait up to 90s for either the home nav to appear, or a 2FA/challenge
         # screen the user can solve manually (headful mode).
@@ -214,7 +215,7 @@ def login(account_name: str) -> None:
 
         # Give the user time to solve any manual challenge
         if not config.WEB_HEADLESS:
-            log.info(f"[{account_name}] if a challenge/2FA is shown, solve it now (waiting 120s)")
+            log.debug(f"[{account_name}] if a challenge/2FA is shown, solve it now (waiting 120s)")
             try:
                 page.wait_for_selector('svg[aria-label="Home"]', timeout=120000)
             except Exception:
@@ -236,7 +237,7 @@ def login(account_name: str) -> None:
             )
 
         context.storage_state(path=str(state_file))
-        log.info(f"[{account_name}] login successful — session saved to {state_file}")
+        log.debug(f"[{account_name}] login successful — session saved to {state_file}")
         context.close()
 
 
@@ -264,7 +265,7 @@ def _post_comment(page: Page, text: str, account_name: str) -> bool:
     textarea = form.locator('textarea').first
     try:
         box = textarea.bounding_box()
-        log.info(f"[{account_name}] comment textarea box={box}")
+        log.debug(f"[{account_name}] comment textarea box={box}")
     except Exception:
         pass
 
@@ -277,7 +278,7 @@ def _post_comment(page: Page, text: str, account_name: str) -> bool:
     except AttributeError:
         textarea.type(text, delay=90)
     _human_delay(0.8, 1.4)
-    log.info(f"[{account_name}] typed comment")
+    log.debug(f"[{account_name}] typed comment")
 
     pre_shot = config.SESSIONS_DIR / account_name / "comment_pre_submit.png"
     page.screenshot(path=str(pre_shot), full_page=False)
@@ -299,7 +300,7 @@ def _post_comment(page: Page, text: str, account_name: str) -> bool:
         except Exception:
             pass
 
-    log.info(f"[{account_name}] submit attempted via: {submitted_via}")
+    log.debug(f"[{account_name}] submit attempted via: {submitted_via}")
     _human_delay(2.0, 3.0)
 
     post_shot = config.SESSIONS_DIR / account_name / "comment_post_submit.png"
@@ -309,7 +310,7 @@ def _post_comment(page: Page, text: str, account_name: str) -> bool:
         remaining = textarea.input_value().strip()
     except Exception:
         remaining = "<could not read>"
-    log.info(f"[{account_name}] textarea after submit: {remaining!r}")
+    log.debug(f"[{account_name}] textarea after submit: {remaining!r}")
 
     if remaining and remaining == text:
         log.error(f"[{account_name}] comment text still in box — submit did NOT register")
@@ -364,7 +365,7 @@ def setup_multi_login(anchor_account: str) -> None:
             pass
 
         context.storage_state(path=str(state_file))
-        log.info(f"Saved multi-login state to {state_file}")
+        log.debug(f"Saved multi-login state to {state_file}")
         context.close()
         browser.close()
 
@@ -377,10 +378,10 @@ def ensure_session(account_name: str) -> None:
     """
     state_file = _session_path(account_name)
     if not state_file.exists():
-        log.info(f"[{account_name}] no saved session — running login()")
+        log.debug(f"[{account_name}] no saved session — running login()")
         login(account_name)
         return
-    log.info(f"[{account_name}] reusing saved session at {state_file}")
+    log.debug(f"[{account_name}] reusing saved session at {state_file}")
 
 
 def open_authenticated_page(p: Playwright, account_name: str) -> tuple[BrowserContext, Page]:
@@ -393,6 +394,7 @@ def open_authenticated_page(p: Playwright, account_name: str) -> tuple[BrowserCo
     page = context.new_page()
     stealth_sync(page)
 
+    log.info(f"[{account_name}] opening instagram")
     page.goto(IG_URL, wait_until="domcontentloaded", timeout=30000)
     _human_delay(1.5, 2.5)
     if "accounts/login" in page.url:
@@ -407,7 +409,7 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
     click the top result's profile, then open its most recent post.
     Returns True if the post view is loaded.
     """
-    log.info(f"[{account_name}] opening search panel")
+    log.debug(f"[{account_name}] opening search panel")
     search_btn = None
     for sel in (
         'a[role="link"]:has(svg[aria-label="Search"])',
@@ -461,7 +463,7 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
         page.keyboard.type(ch)
         time.sleep(random.uniform(0.06, 0.16))
 
-    log.info(f"[{account_name}] typed query: {query!r} — waiting for results")
+    log.debug(f"[{account_name}] typed query: {query!r} — waiting for results")
     _human_delay(2.0, 3.5)
 
     result_links = page.locator('a[role="link"][href^="/"]').all()
@@ -488,7 +490,7 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
         raise RuntimeError(f"No search results — screenshot: {shot}")
 
     top = results[0]
-    log.info(f"[{account_name}] clicking top result: {top['handle']}")
+    log.debug(f"[{account_name}] clicking top result: {top['handle']}")
     first_result = page.locator(f'a[role="link"][href="/{top["handle"]}/"]').first
     try:
         first_result.click(timeout=5000)
@@ -503,6 +505,7 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
         page.screenshot(path=str(shot), full_page=True)
         raise RuntimeError(f"Profile grid not found — screenshot: {shot}")
 
+    log.info(f"[{account_name}] Opened page: '{query}'")
     _human_delay(1.5, 2.5)
 
     # Skip pinned posts. IG can render the pinned signal in different shapes:
@@ -551,8 +554,8 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
         scan = []
 
     for idx, row in enumerate(scan[:6]):
-        log.info(f"[{account_name}] grid[{idx}] pinned={row.get('pinned')} "
-                 f"signal={row.get('signal')!r} href={row.get('href')}")
+        log.debug(f"[{account_name}] grid[{idx}] pinned={row.get('pinned')} "
+                  f"signal={row.get('signal')!r} href={row.get('href')}")
 
     all_posts = page.locator(post_selector).all()
     first_post = None
@@ -562,11 +565,11 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
         row = next((r for r in scan if r.get("href") == href), None)
         is_pinned = bool(row and row.get("pinned"))
         if is_pinned:
-            log.info(f"[{account_name}] skipping pinned post at idx {idx}: {href}")
+            log.debug(f"[{account_name}] skipping pinned post at idx {idx}: {href}")
             continue
         first_post = link
         post_href = href
-        log.info(f"[{account_name}] selected non-pinned post at idx {idx}: {href}")
+        log.debug(f"[{account_name}] selected non-pinned post at idx {idx}: {href}")
         break
 
     if first_post is None:
@@ -579,7 +582,7 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
         first_post = posts_all.nth(skip_n)
         post_href = first_post.get_attribute("href")
 
-    log.info(f"[{account_name}] opening most recent post: {post_href}")
+    log.debug(f"[{account_name}] opening most recent post: {post_href}")
 
     first_post.scroll_into_view_if_needed()
     _human_delay(0.5, 1.0)
@@ -606,7 +609,7 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
             'main article:has(video), main article:has(img)',
             timeout=10000,
         )
-        log.info(f"[{account_name}] post view loaded")
+        log.info(f"[{account_name}] Opened most recent post on '{query}'")
         return True
     except Exception:
         shot = config.SESSIONS_DIR / account_name / "post_view_failed.png"
@@ -633,7 +636,7 @@ def _dismiss_switch_error(page: Page) -> None:
         ):
             try:
                 page.locator(sel).first.click(timeout=400)
-                log.info(f"[switch_account] dismissed error dialog via {label}")
+                log.debug(f"[switch_account] dismissed error dialog via {label}")
                 dismissed = True
                 break
             except Exception:
@@ -650,7 +653,7 @@ def _dismiss_switch_error(page: Page) -> None:
     ):
         try:
             page.locator(sel).first.click(timeout=600)
-            log.info(f"[switch_account] clicked Reload after error")
+            log.debug(f"[switch_account] clicked Reload after error")
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=10000)
             except Exception:
@@ -690,7 +693,7 @@ def switch_account(page: Page, target_account_name: str) -> bool:
         try:
             page.locator(sel).first.click(timeout=2500)
             opened = True
-            log.info(f"[switch_account] opened via sidebar Switch: {sel}")
+            log.debug(f"[switch_account] opened via sidebar Switch: {sel}")
             break
         except Exception:
             continue
@@ -713,7 +716,7 @@ def switch_account(page: Page, target_account_name: str) -> bool:
                     try:
                         page.locator(item_sel).first.click(timeout=2500)
                         opened = True
-                        log.info(f"[switch_account] opened via More → {item_sel}")
+                        log.debug(f"[switch_account] opened via More → {item_sel}")
                         break
                     except Exception:
                         continue
@@ -764,11 +767,11 @@ def switch_account(page: Page, target_account_name: str) -> bool:
     for attempt in range(2):
         try:
             page.wait_for_selector('svg[aria-label="Home"]', timeout=20000)
-            log.info(f"[switch_account] switched to {target_username}")
+            log.debug(f"[switch_account] switched to {target_username}")
             return True
         except Exception:
             if attempt == 0:
-                log.info(f"[switch_account] Home svg not visible, retrying via goto")
+                log.debug(f"[switch_account] Home svg not visible, retrying via goto")
                 try:
                     page.goto(IG_URL, wait_until="domcontentloaded", timeout=20000)
                     _human_delay(1.5, 2.5)
@@ -803,11 +806,11 @@ def search(account_name: str, query: str, comment: Optional[str] = None, pause_s
             ok = search_and_open_top_post(page, query, account_name)
             if ok and comment:
                 _human_delay(1.0, 2.0)
-                log.info(f"[{account_name}] posting comment: {comment!r}")
+                log.debug(f"[{account_name}] posting comment: {comment!r}")
                 if not _post_comment(page, comment, account_name):
                     log.error(f"[{account_name}] comment submission failed")
             _human_delay(1.5, 2.5)
-            log.info(f"[{account_name}] keeping browser open {pause_s}s")
+            log.debug(f"[{account_name}] keeping browser open {pause_s}s")
             time.sleep(pause_s)
         finally:
             context.close()

@@ -101,7 +101,7 @@ def _process_account_on_page(page: Page, account_name: str, targets: list[str],
             posted = web._post_comment(page, comment_text, account_name)
             if posted:
                 stats["succeeded"] += 1
-                log.info(f"[{account_name}] commented on {target}: \"{comment_text}\"")
+                log.info(f"[{account_name}] commented on '{target}': \"{comment_text}\"")
             else:
                 stats["failed"].append({"target": target, "reason": "comment_submit_failed"})
         except Exception as e:
