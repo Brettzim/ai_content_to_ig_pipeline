@@ -476,7 +476,7 @@ class _ListLogHandler(logging.Handler):
 
 def _load_auto_config(path: Path) -> dict:
     default = {
-        "comments": [], "accounts": [], "assignments": {},
+        "comments": [], "accounts": [], "assignments": {}, "groups": [],
         "delay_between_targets_s": [25, 70],
         "delay_between_accounts_s": [60, 180],
     }
@@ -493,6 +493,22 @@ def _load_auto_config(path: Path) -> dict:
                 if t not in seen:
                     seen.add(t); flat.append(t)
         cfg.setdefault("accounts", flat)
+    # Migrate legacy assignments → groups: bucket models by their target set so
+    # users with per-model customization don't lose granularity.
+    if not cfg.get("groups") and cfg.get("assignments"):
+        buckets: dict[tuple, list[str]] = {}
+        for model, targets in cfg["assignments"].items():
+            if not targets:
+                continue
+            buckets.setdefault(tuple(sorted(targets)), []).append(model)
+        groups = []
+        for i, (targets_key, models) in enumerate(buckets.items(), 1):
+            groups.append({
+                "name": "Default" if len(buckets) == 1 else f"Group {i}",
+                "models": sorted(models),
+                "targets": list(targets_key),
+            })
+        cfg["groups"] = groups
     for k, v in default.items():
         cfg.setdefault(k, v)
     return cfg
@@ -519,17 +535,39 @@ def api_auto_comment_config():
         return jsonify(_load_auto_config(cfg_path))
     try:
         data = request.json or {}
-        accounts = list(dict.fromkeys(
-            t.strip().lstrip("@") for t in (data.get("accounts") or []) if t and t.strip()
-        ))
-        account_set = set(accounts)
-        assignments = {
-            g: [t for t in dict.fromkeys(ts) if t in account_set]
-            for g, ts in (data.get("assignments") or {}).items()
-        }
+        # Sanitize groups
+        groups: list[dict] = []
+        all_targets: list[str] = []
+        seen_targets: set[str] = set()
+        for g in (data.get("groups") or []):
+            name = (g.get("name") or "").strip() or "Untitled"
+            models = list(dict.fromkeys(
+                m for m in (g.get("models") or []) if isinstance(m, str) and m
+            ))
+            targets = list(dict.fromkeys(
+                t.strip().lstrip("@")
+                for t in (g.get("targets") or [])
+                if isinstance(t, str) and t.strip()
+            ))
+            groups.append({"name": name, "models": models, "targets": targets})
+            for t in targets:
+                if t not in seen_targets:
+                    seen_targets.add(t)
+                    all_targets.append(t)
+
+        # Derive assignments + accounts for backend compat (auto_commenter reads these)
+        assignments: dict[str, list[str]] = {}
+        for g in groups:
+            for m in g["models"]:
+                bucket = assignments.setdefault(m, [])
+                for t in g["targets"]:
+                    if t not in bucket:
+                        bucket.append(t)
+
         cleaned = {
             "comments": [c for c in (data.get("comments") or []) if c.strip()],
-            "accounts": accounts,
+            "groups": groups,
+            "accounts": all_targets,
             "assignments": assignments,
             "delay_between_targets_s": data.get("delay_between_targets_s", [25, 70]),
             "delay_between_accounts_s": data.get("delay_between_accounts_s", [60, 180]),

@@ -403,6 +403,26 @@ def open_authenticated_page(p: Playwright, account_name: str) -> tuple[BrowserCo
     return context, page
 
 
+def _dismiss_overlay_popups(page: Page) -> None:
+    """
+    Dismiss common IG post-login interstitials that intercept pointer events:
+    "Save your login info?", "Turn on notifications", cookie consents, etc.
+    Silent best-effort — no-op if none are present.
+    """
+    for label in ("Not now", "Not Now", "Not Right Now",
+                  "Cancel", "Dismiss", "Close"):
+        try:
+            page.get_by_role("button", name=label, exact=True).first.click(timeout=600)
+            _human_delay(0.3, 0.7)
+        except Exception:
+            continue
+    # Some prompts only listen to Escape
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+
+
 def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
     """
     From a logged-in IG home page: open the search panel, type `query`,
@@ -410,6 +430,7 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
     Returns True if the post view is loaded.
     """
     log.debug(f"[{account_name}] opening search panel")
+    _dismiss_overlay_popups(page)
     search_btn = None
     for sel in (
         'a[role="link"]:has(svg[aria-label="Search"])',
@@ -429,7 +450,18 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
         page.screenshot(path=str(shot), full_page=True)
         raise RuntimeError(f"Search button not found — screenshot: {shot}")
 
-    search_btn.click()
+    try:
+        search_btn.click(timeout=8000)
+    except Exception as e:
+        # Most common cause: a modal popup intercepting pointer events.
+        # Dismiss it and retry; final fallback is force=True.
+        log.warning(f"[{account_name}] search click intercepted ({e}); dismissing overlays and retrying")
+        _dismiss_overlay_popups(page)
+        _human_delay(0.5, 1.0)
+        try:
+            search_btn.click(timeout=5000)
+        except Exception:
+            search_btn.click(timeout=5000, force=True)
     _human_delay(1.0, 1.8)
 
     search_input = None
@@ -508,12 +540,13 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
     log.info(f"[{account_name}] Opened page: '{query}'")
     _human_delay(1.5, 2.5)
 
-    # Skip pinned posts. IG can render the pinned signal in different shapes:
-    #   - an SVG with aria-label="Pinned post" (sibling overlay in the grid cell)
-    #   - an SVG with a child <title>Pinned post</title>
-    #   - a text node "Pinned" somewhere in the cell
-    # Collect all grid links in a single page-level eval, walking up ancestors
-    # and checking every signal. Up to 3 posts can be pinned.
+    # Skip pinned posts. IG renders the pinned signal in two reliable shapes:
+    #   - an SVG sibling with aria-label="Pinned post" inside the grid cell
+    #   - an SVG <title>Pinned post</title> inside the grid cell
+    # We deliberately DON'T fall back to ancestor textContent: a section header
+    # like "Pinned posts" leaks into every parent chain and false-positives
+    # every post in the grid. Limit ancestor walk to 3 levels — enough to
+    # reach the cell wrapper, not enough to escape into shared siblings.
     pinned_scan_js = """
         () => {
             const links = document.querySelectorAll(
@@ -524,7 +557,7 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
                 let node = a;
                 let pinned = false;
                 let signal = null;
-                for (let i = 0; i < 8 && node && !pinned; i++) {
+                for (let i = 0; i < 3 && node && !pinned; i++) {
                     for (const n of node.querySelectorAll('[aria-label]')) {
                         const v = (n.getAttribute('aria-label') || '').toLowerCase();
                         if (v.includes('pinned')) { pinned = true; signal = 'aria:' + v; break; }
@@ -533,12 +566,6 @@ def search_and_open_top_post(page: Page, query: str, account_name: str) -> bool:
                     for (const t of node.querySelectorAll('title')) {
                         const v = (t.textContent || '').toLowerCase();
                         if (v.includes('pinned')) { pinned = true; signal = 'title:' + v; break; }
-                    }
-                    if (pinned) break;
-                    const txt = (node.textContent || '').toLowerCase();
-                    if (txt.includes('pinned')) {
-                        // only count if short enough to not be a caption match
-                        if (txt.length < 200) { pinned = true; signal = 'text'; }
                     }
                     node = node.parentElement;
                 }

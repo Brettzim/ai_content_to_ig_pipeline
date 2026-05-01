@@ -55,21 +55,15 @@
     .add-model-row input{flex:1;min-width:140px;max-width:none;}
     .add-model-row button{flex-shrink:0;}
     .form-error{color:var(--rose);font-size:12px;margin-top:8px;min-height:1em;}
-    .customize-toggle{background:none;border:none;color:var(--gold-dim);font-family:'Jost',sans-serif;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;padding:8px 0;margin-top:12px;display:flex;align-items:center;gap:6px;}
-    .customize-toggle:hover{color:var(--gold);}
-    .customize-toggle .arrow{transition:transform .2s;display:inline-block;}
-    .customize-toggle .arrow.open{transform:rotate(90deg);}
-    .customize-panel{display:none;margin-top:12px;}
-    .customize-panel.open{display:block;}
-    .accordion-item{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:6px;overflow:hidden;}
-    .accordion-header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;cursor:pointer;background:var(--bg);transition:background .2s;}
-    .accordion-header:hover{background:rgba(201,165,90,0.04);}
-    .accordion-header .name{font-size:13px;font-weight:400;}
-    .accordion-header .count{font-size:11px;color:#8a8580;}
-    .accordion-header .arrow{color:#8a8580;transition:transform .2s;display:inline-block;font-size:12px;}
-    .accordion-header .arrow.open{transform:rotate(90deg);}
-    .accordion-body{display:none;padding:10px 14px;border-top:1px solid var(--border);background:var(--surface);}
-    .accordion-body.open{display:flex;flex-wrap:wrap;gap:6px;}
+    .group-card{border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px;background:var(--bg);}
+    .group-header{display:flex;align-items:center;gap:8px;margin-bottom:14px;}
+    .group-name-input{font-family:'Cormorant Garamond',serif !important;font-size:18px !important;font-weight:400 !important;background:transparent !important;border:none !important;border-bottom:1px solid var(--border) !important;border-radius:0 !important;padding:4px 0 !important;flex:1;color:var(--gold) !important;letter-spacing:0.04em;}
+    .group-name-input:focus{border-bottom-color:var(--gold-dim) !important;}
+    .group-delete{background:none;border:none;color:#6a5555;font-size:22px;cursor:pointer;padding:0 8px;line-height:1;}
+    .group-delete:hover{color:var(--rose);}
+    .group-section{margin-bottom:14px;}
+    .group-section:last-child{margin-bottom:0;}
+    .group-section label{margin-bottom:6px;}
     .status-panel{font-family:'JetBrains Mono',monospace;font-size:12px;background:#000;border:1px solid var(--border);border-radius:var(--radius);padding:14px;max-height:300px;overflow:auto;white-space:pre-wrap;color:#b5b0a8;}
     .bar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:20px;}
     .hint{color:#6a6560;font-size:11px;margin-top:6px;}
@@ -126,7 +120,7 @@
 
   <main>
     <h1>Auto-Comment</h1>
-    <div class="subtitle">Cycle each girl through her checked target accounts and drop a comment on the most recent non-pinned post.</div>
+    <div class="subtitle">Group models with the targets they should comment on. Each model in a group hits every target in that group's most recent non-pinned post.</div>
 
     <div class="card">
       <h2>Comment bank</h2>
@@ -135,38 +129,24 @@
     </div>
 
     <div class="card">
-      <h2>Select Models & Targets</h2>
-      <div class="select-lists">
-        <div class="select-list">
-          <div class="select-list-header">
-            <label>Models</label>
-            <button class="select-all-btn" onclick="toggleAllModels()">Select all</button>
-          </div>
-          <div class="pill-box" id="model-pills"></div>
-          <div class="add-row add-model-row">
-            <input type="text" id="new-model-name" placeholder="account name (optional — defaults to username)">
-            <input type="text" id="new-model-username" placeholder="Instagram username" autocapitalize="none" autocorrect="off" spellcheck="false">
-            <input type="password" id="new-model-password" placeholder="Instagram password">
-            <button class="secondary" onclick="addModel()">Add model</button>
-          </div>
-          <div id="add-model-error" class="form-error"></div>
-        </div>
-        <div class="select-list">
-          <div class="select-list-header">
-            <label>Targets</label>
-            <button class="select-all-btn" onclick="toggleAllTargets()">Select all</button>
-          </div>
-          <div class="pill-box" id="target-pills"></div>
-          <div class="add-row">
-            <input type="text" id="new-target" placeholder="add target username or paste IG link">
-            <button class="secondary" onclick="addTarget()">Add target</button>
-          </div>
-        </div>
+      <h2>Models</h2>
+      <div class="pill-box" id="model-pills"></div>
+      <div class="add-row add-model-row">
+        <input type="text" id="new-model-name" placeholder="account name (optional — defaults to username)">
+        <input type="text" id="new-model-username" placeholder="Instagram username" autocapitalize="none" autocorrect="off" spellcheck="false">
+        <input type="password" id="new-model-password" placeholder="Instagram password">
+        <button class="secondary" onclick="addModel()">Add model</button>
       </div>
-      <button class="customize-toggle" onclick="toggleCustomize()">
-        <span class="arrow" id="cust-arrow">▸</span> Customize per-model assignments
-      </button>
-      <div class="customize-panel" id="customize-panel"></div>
+      <div id="add-model-error" class="form-error"></div>
+    </div>
+
+    <div class="card">
+      <h2>Groups</h2>
+      <div class="hint" style="margin-bottom:14px;">Each model in a group comments on every target in the group. A model can belong to multiple groups.</div>
+      <div id="groups-container"></div>
+      <div class="add-row" style="margin-top:12px;">
+        <button class="secondary" onclick="addGroup()">+ Add group</button>
+      </div>
     </div>
 
 
@@ -184,32 +164,15 @@
   </main>
 
   <script>
-    let state = { comments: [], assignments: {}, accounts: [], girls: [],
-                   selectedGirls: [], selectedTargets: [],
+    let state = { comments: [], groups: [], girls: [],
                    delay_t: [25,70], delay_a: [60,180] };
     let personas = {};
     let pollTimer = null;
     let currentJob = null;
-    let customizeOpen = false;
 
-    function deriveSelections() {
-      state.selectedGirls = state.girls.filter(g =>
-        (state.assignments[g] || []).length > 0);
-      state.selectedTargets = [...new Set(
-        Object.values(state.assignments).flat()
-      )].filter(t => state.accounts.includes(t));
-    }
-
-    function syncAssignments() {
-      for (const g of state.girls) {
-        if (!state.selectedGirls.includes(g)) {
-          state.assignments[g] = [];
-        } else if (!customizeOpen) {
-          state.assignments[g] = state.selectedTargets.slice();
-        } else {
-          state.assignments[g] = (state.assignments[g] || []).filter(t => state.selectedTargets.includes(t));
-        }
-      }
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
     async function load() {
@@ -221,13 +184,14 @@
       personas = p;
       state.girls = (creds.names || []).slice().sort();
       state.comments = cfg.comments || [];
-      state.assignments = cfg.assignments || {};
-      state.accounts = (cfg.accounts || []).slice();
+      state.groups = (cfg.groups || []).map(g => ({
+        name: g.name || '',
+        models: [...(g.models || [])],
+        targets: [...(g.targets || [])],
+      }));
       state.delay_t = cfg.delay_between_targets_s || [25,70];
       state.delay_a = cfg.delay_between_accounts_s || [60,180];
       document.getElementById('comments').value = state.comments.join('\n');
-      for (const g of state.girls) if (!state.assignments[g]) state.assignments[g] = [];
-      deriveSelections();
       render();
     }
 
@@ -236,78 +200,108 @@
     }
 
     function render() {
-      renderModelPills();
-      renderTargetPills();
-      renderCustomize();
+      renderModelList();
+      renderGroups();
     }
 
-    function renderModelPills() {
+    function renderModelList() {
       const box = document.getElementById('model-pills');
-      box.innerHTML = state.girls.map(g => {
-        const on = state.selectedGirls.includes(g);
-        return `<span class="sel-pill${on?' on':''}" onclick="toggleModel('${g}')">${displayName(g)}</span>`;
-      }).join('');
-    }
-
-    function renderTargetPills() {
-      const box = document.getElementById('target-pills');
-      if (state.accounts.length === 0) {
-        box.innerHTML = '<span style="color:#6a6560;font-size:12px;padding:4px;">No targets yet — add one below.</span>';
+      if (state.girls.length === 0) {
+        box.innerHTML = '<span style="color:#6a6560;font-size:12px;padding:4px;">No models yet — add one below.</span>';
         return;
       }
-      box.innerHTML = state.accounts.map(t => {
-        const on = state.selectedTargets.includes(t);
-        return `<span class="sel-pill${on?' on':''}" onclick="toggleTarget('${t}')">${t}<span class="remove-x" onclick="event.stopPropagation();removeTarget('${t}')">×</span></span>`;
-      }).join('');
+      box.innerHTML = state.girls.map(g =>
+        `<span class="sel-pill on">${esc(displayName(g))}</span>`
+      ).join('');
     }
 
-    function toggleModel(g) {
-      const i = state.selectedGirls.indexOf(g);
-      if (i >= 0) state.selectedGirls.splice(i, 1);
-      else state.selectedGirls.push(g);
-      syncAssignments();
-      render();
-    }
-
-    function toggleTarget(t) {
-      const i = state.selectedTargets.indexOf(t);
-      if (i >= 0) state.selectedTargets.splice(i, 1);
-      else state.selectedTargets.push(t);
-      syncAssignments();
-      render();
-    }
-
-    function toggleAllModels() {
-      if (state.selectedGirls.length === state.girls.length) {
-        state.selectedGirls = [];
-      } else {
-        state.selectedGirls = state.girls.slice();
+    function renderGroups() {
+      const container = document.getElementById('groups-container');
+      if (state.groups.length === 0) {
+        container.innerHTML = '<div style="color:#6a6560;font-size:12px;padding:8px 0;">No groups yet. Click "Add group" to create one.</div>';
+        return;
       }
-      syncAssignments();
+      container.innerHTML = state.groups.map((g, gi) => `
+        <div class="group-card">
+          <div class="group-header">
+            <input type="text" class="group-name-input" value="${esc(g.name)}" oninput="renameGroup(${gi}, this.value)" placeholder="Group name">
+            <button class="group-delete" onclick="removeGroup(${gi})" title="Delete group">×</button>
+          </div>
+          <div class="group-section">
+            <label>Models</label>
+            <div class="pill-box">
+              ${state.girls.length === 0
+                ? '<span style="color:#6a6560;font-size:12px;padding:4px;">No models — add one above.</span>'
+                : state.girls.map(m => {
+                    const on = (g.models || []).includes(m);
+                    return `<span class="sel-pill${on?' on':''}" onclick="toggleGroupModel(${gi}, '${esc(m)}')">${esc(displayName(m))}</span>`;
+                  }).join('')}
+            </div>
+          </div>
+          <div class="group-section">
+            <label>Targets</label>
+            <div class="pill-box">
+              ${(g.targets || []).length === 0
+                ? '<span style="color:#6a6560;font-size:12px;padding:4px;">No targets yet — add one below.</span>'
+                : (g.targets || []).map(t =>
+                    `<span class="sel-pill on">${esc(t)}<span class="remove-x" onclick="removeGroupTarget(${gi}, '${esc(t)}')">×</span></span>`
+                  ).join('')}
+            </div>
+            <div class="add-row">
+              <input type="text" class="new-group-target-input" placeholder="add target username or paste IG link" onkeydown="if(event.key==='Enter'){event.preventDefault();addGroupTarget(${gi}, this);}">
+              <button class="secondary" onclick="addGroupTarget(${gi}, this.previousElementSibling)">Add target</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function addGroup() {
+      state.groups.push({name: `Group ${state.groups.length + 1}`, models: [], targets: []});
       render();
     }
 
-    function toggleAllTargets() {
-      if (state.selectedTargets.length === state.accounts.length) {
-        state.selectedTargets = [];
-      } else {
-        state.selectedTargets = state.accounts.slice();
-      }
-      syncAssignments();
+    function removeGroup(gi) {
+      const name = state.groups[gi] && state.groups[gi].name || 'this group';
+      if (!confirm(`Delete "${name}"?`)) return;
+      state.groups.splice(gi, 1);
       render();
     }
 
-    function addTarget() {
-      const inp = document.getElementById('new-target');
-      let v = (inp.value || '').trim();
+    function renameGroup(gi, name) {
+      // Update state without re-rendering so the input keeps focus.
+      if (state.groups[gi]) state.groups[gi].name = name;
+    }
+
+    function toggleGroupModel(gi, model) {
+      const g = state.groups[gi];
+      if (!g) return;
+      g.models = g.models || [];
+      const i = g.models.indexOf(model);
+      if (i >= 0) g.models.splice(i, 1);
+      else g.models.push(model);
+      render();
+    }
+
+    function addGroupTarget(gi, inputEl) {
+      let v = (inputEl.value || '').trim();
       const m = v.match(/instagram\.com\/([^/?#]+)/i);
       if (m) v = m[1];
       v = v.replace(/^@/, '');
-      inp.value = '';
-      if (!v || state.accounts.includes(v)) return;
-      state.accounts.push(v);
-      state.selectedTargets.push(v);
-      syncAssignments();
+      inputEl.value = '';
+      if (!v) return;
+      const g = state.groups[gi];
+      if (!g) return;
+      g.targets = g.targets || [];
+      if (g.targets.includes(v)) return;
+      g.targets.push(v);
+      render();
+    }
+
+    function removeGroupTarget(gi, target) {
+      const g = state.groups[gi];
+      if (!g) return;
+      g.targets = (g.targets || []).filter(t => t !== target);
       render();
     }
 
@@ -338,79 +332,21 @@
       nameInp.value = ''; userInp.value = ''; passInp.value = '';
       const creds = await fetch('/api/web-credentials').then(r=>r.json());
       state.girls = (creds.names || []).slice().sort();
-      for (const g of state.girls) if (!state.assignments[g]) state.assignments[g] = [];
       render();
-    }
-
-    function removeTarget(t) {
-      state.accounts = state.accounts.filter(x => x !== t);
-      state.selectedTargets = state.selectedTargets.filter(x => x !== t);
-      for (const g of Object.keys(state.assignments)) {
-        state.assignments[g] = (state.assignments[g] || []).filter(x => x !== t);
-      }
-      render();
-    }
-
-    function toggleCustomize() {
-      customizeOpen = !customizeOpen;
-      document.getElementById('cust-arrow').classList.toggle('open', customizeOpen);
-      document.getElementById('customize-panel').classList.toggle('open', customizeOpen);
-      if (customizeOpen) renderCustomize();
-    }
-
-    function renderCustomize() {
-      const panel = document.getElementById('customize-panel');
-      if (!customizeOpen) return;
-      const active = state.selectedGirls;
-      if (active.length === 0) {
-        panel.innerHTML = '<div style="color:#6a6560;font-size:12px;padding:8px 0;">Select at least one model above.</div>';
-        return;
-      }
-      panel.innerHTML = active.map(g => {
-        const assigned = state.assignments[g] || [];
-        const open = panel.querySelector(`[data-acc-g="${g}"] .accordion-body.open`) ? true : false;
-        return `<div class="accordion-item" data-acc-g="${g}">
-          <div class="accordion-header" onclick="toggleAccordion(this)">
-            <span class="name">${displayName(g)}</span>
-            <span>
-              <span class="count">${assigned.length} / ${state.selectedTargets.length} targets</span>
-              <span class="arrow${open?' open':''}"> ▸</span>
-            </span>
-          </div>
-          <div class="accordion-body">
-            ${state.selectedTargets.length === 0
-              ? '<span style="color:#6a6560;font-size:12px;">No targets selected.</span>'
-              : state.selectedTargets.map(t => {
-                const on = assigned.includes(t);
-                return `<span class="sel-pill${on?' on':''}" onclick="toggleCustomAssignment('${g}','${t}')">${t}</span>`;
-              }).join('')}
-          </div>
-        </div>`;
-      }).join('');
-    }
-
-    function toggleAccordion(header) {
-      const body = header.nextElementSibling;
-      const arrow = header.querySelector('.arrow');
-      body.classList.toggle('open');
-      arrow.classList.toggle('open');
-    }
-
-    function toggleCustomAssignment(g, t) {
-      const list = state.assignments[g] || (state.assignments[g] = []);
-      const i = list.indexOf(t);
-      if (i >= 0) list.splice(i, 1);
-      else list.push(t);
-      renderCustomize();
     }
 
     function collect() {
       const comments = document.getElementById('comments').value
         .split('\n').map(s => s.trim()).filter(Boolean);
+      const validModels = new Set(state.girls);
+      const groups = state.groups.map(g => ({
+        name: (g.name || '').trim() || 'Untitled',
+        models: [...new Set(g.models || [])].filter(m => validModels.has(m)),
+        targets: [...new Set(g.targets || [])].filter(t => t),
+      }));
       return {
         comments,
-        accounts: state.accounts,
-        assignments: state.assignments,
+        groups,
         delay_between_targets_s: state.delay_t,
         delay_between_accounts_s: state.delay_a,
       };
