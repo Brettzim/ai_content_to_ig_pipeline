@@ -27,6 +27,7 @@ from werkzeug.security import check_password_hash
 
 import config
 import auto_commenter
+from db import get_conn
 from instagram_client import IGAccount, InstagramClient
 from xai_client import XAIClient
 
@@ -75,21 +76,10 @@ def _user_accounts_file(username: str | None = None) -> Path:
     return p
 
 
-def _user_web_creds_file(username: str | None = None) -> Path:
-    p = _user_dir(username) / "web_credentials.json"
-    if not p.exists():
-        p.write_text("[]", encoding="utf-8")
-    return p
-
-
 def _user_auto_comment_config(username: str | None = None) -> Path:
     p = _user_dir(username) / "auto_comment_config.json"
     if not p.exists():
-        p.write_text(json.dumps({
-            "comments": [], "accounts": [], "assignments": {},
-            "delay_between_targets_s": [25, 70],
-            "delay_between_accounts_s": [60, 180],
-        }), encoding="utf-8")
+        p.write_text(json.dumps({"comments": []}), encoding="utf-8")
     return p
 
 
@@ -474,52 +464,39 @@ class _ListLogHandler(logging.Handler):
             pass
 
 
-def _load_auto_config(path: Path) -> dict:
-    default = {
-        "comments": [], "accounts": [], "assignments": {}, "groups": [],
-        "delay_between_targets_s": [25, 70],
-        "delay_between_accounts_s": [60, 180],
-    }
-    if not path.exists():
-        return default
-    with open(path, encoding="utf-8") as f:
-        cfg = json.load(f)
-    if isinstance(cfg.get("accounts"), dict):
-        legacy = cfg.pop("accounts")
-        cfg.setdefault("assignments", legacy)
-        seen, flat = set(), []
-        for ts in legacy.values():
-            for t in ts:
-                if t not in seen:
-                    seen.add(t); flat.append(t)
-        cfg.setdefault("accounts", flat)
-    # Migrate legacy assignments → groups: bucket models by their target set so
-    # users with per-model customization don't lose granularity.
-    if not cfg.get("groups") and cfg.get("assignments"):
-        buckets: dict[tuple, list[str]] = {}
-        for model, targets in cfg["assignments"].items():
-            if not targets:
-                continue
-            buckets.setdefault(tuple(sorted(targets)), []).append(model)
-        groups = []
-        for i, (targets_key, models) in enumerate(buckets.items(), 1):
-            groups.append({
-                "name": "Default" if len(buckets) == 1 else f"Group {i}",
-                "models": sorted(models),
-                "targets": list(targets_key),
-            })
-        cfg["groups"] = groups
-    for k, v in default.items():
-        cfg.setdefault(k, v)
-    return cfg
-
-
-def _load_web_credential_names(path: Path) -> list[str]:
+def _load_comments(path: Path) -> list[str]:
     if not path.exists():
         return []
     with open(path, encoding="utf-8") as f:
-        creds = json.load(f)
-    return [c["name"] for c in creds if c.get("name")]
+        cfg = json.load(f)
+    return cfg.get("comments") or []
+
+
+def _load_groups_from_db(user: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT group_name, ig_name, target FROM auto_comment "
+            "WHERE user = ? ORDER BY group_name, ig_name, target",
+            (user,),
+        ).fetchall()
+    groups: dict[str, dict] = {}
+    for r in rows:
+        g = groups.setdefault(r["group_name"],
+                              {"name": r["group_name"], "models": [], "targets": []})
+        if r["ig_name"] not in g["models"]:
+            g["models"].append(r["ig_name"])
+        if r["target"] not in g["targets"]:
+            g["targets"].append(r["target"])
+    return list(groups.values())
+
+
+def _load_web_credential_names(username: str) -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT ig_name FROM accounts WHERE user = ? ORDER BY ig_name",
+            (username,),
+        ).fetchall()
+    return [r["ig_name"] for r in rows]
 
 
 def _save_auto_config(path: Path, data: dict) -> None:
@@ -530,15 +507,22 @@ def _save_auto_config(path: Path, data: dict) -> None:
 
 @app.route("/api/auto-comment/config", methods=["GET", "POST"])
 def api_auto_comment_config():
-    cfg_path = _user_auto_comment_config()
+    user = session.get("username") or ""
+    if not user:
+        abort(401)
+    cfg_path = _user_auto_comment_config(user)
+
     if request.method == "GET":
-        return jsonify(_load_auto_config(cfg_path))
+        return jsonify({
+            "comments": _load_comments(cfg_path),
+            "groups": _load_groups_from_db(user),
+        })
     try:
         data = request.json or {}
-        # Sanitize groups
+        comments = [c for c in (data.get("comments") or []) if c.strip()]
+
+        # Sanitize incoming groups
         groups: list[dict] = []
-        all_targets: list[str] = []
-        seen_targets: set[str] = set()
         for g in (data.get("groups") or []):
             name = (g.get("name") or "").strip() or "Untitled"
             models = list(dict.fromkeys(
@@ -550,29 +534,26 @@ def api_auto_comment_config():
                 if isinstance(t, str) and t.strip()
             ))
             groups.append({"name": name, "models": models, "targets": targets})
-            for t in targets:
-                if t not in seen_targets:
-                    seen_targets.add(t)
-                    all_targets.append(t)
 
-        # Derive assignments + accounts for backend compat (auto_commenter reads these)
-        assignments: dict[str, list[str]] = {}
-        for g in groups:
-            for m in g["models"]:
-                bucket = assignments.setdefault(m, [])
-                for t in g["targets"]:
-                    if t not in bucket:
-                        bucket.append(t)
+        # Replace this user's auto_comment rows with the new set. Drop any
+        # ig_name that isn't a known account for this user.
+        with get_conn() as conn:
+            valid_names = {r["ig_name"] for r in conn.execute(
+                "SELECT ig_name FROM accounts WHERE user = ?", (user,)
+            ).fetchall()}
+            conn.execute("DELETE FROM auto_comment WHERE user = ?", (user,))
+            for g in groups:
+                for m in g["models"]:
+                    if m not in valid_names:
+                        continue
+                    for t in g["targets"]:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO auto_comment "
+                            "(user, group_name, ig_name, target) VALUES (?, ?, ?, ?)",
+                            (user, g["name"], m, t),
+                        )
 
-        cleaned = {
-            "comments": [c for c in (data.get("comments") or []) if c.strip()],
-            "groups": groups,
-            "accounts": all_targets,
-            "assignments": assignments,
-            "delay_between_targets_s": data.get("delay_between_targets_s", [25, 70]),
-            "delay_between_accounts_s": data.get("delay_between_accounts_s", [60, 180]),
-        }
-        _save_auto_config(cfg_path, cleaned)
+        _save_auto_config(cfg_path, {"comments": comments})
         return jsonify({"ok": True})
     except Exception as e:
         log.exception("save auto-comment config failed")
@@ -585,7 +566,6 @@ _auto_commenter_lock = threading.Lock()
 def _run_auto_commenter(job_id: str, dry_run: bool, username: str):
     job = _auto_jobs[job_id]
     cfg_path = _user_auto_comment_config(username)
-    creds_file = _user_web_creds_file(username)
 
     logger = logging.getLogger("auto_commenter")
     web_logger = logging.getLogger("ig_web_client")
@@ -595,22 +575,20 @@ def _run_auto_commenter(job_id: str, dry_run: bool, username: str):
     web_logger.addHandler(handler)
     try:
         with _auto_commenter_lock:
-            # Resolve sessions_dir inside the lock — config.SESSIONS_DIR is
-            # temporarily mutated below and we need the original parent here.
-            old_creds = config.WEB_CREDENTIALS_FILE
             old_sessions = config.SESSIONS_DIR
+            old_user = config.CURRENT_USER
             sessions_dir = old_sessions / username
             sessions_dir.mkdir(parents=True, exist_ok=True)
-            config.WEB_CREDENTIALS_FILE = creds_file
             config.SESSIONS_DIR = sessions_dir
+            config.CURRENT_USER = username
             try:
                 job["status"] = "running"
                 results = auto_commenter.run(cfg_path, dry_run=dry_run)
                 job["results"] = results
                 job["status"] = "done"
             finally:
-                config.WEB_CREDENTIALS_FILE = old_creds
                 config.SESSIONS_DIR = old_sessions
+                config.CURRENT_USER = old_user
     except Exception as e:
         job["status"] = "error"
         job["error"] = str(e)
@@ -650,9 +628,12 @@ def api_auto_comment_job(job_id):
 
 @app.route("/api/web-credentials", methods=["GET", "POST"])
 def api_web_credentials():
-    creds_file = _user_web_creds_file()
+    user = session.get("username") or ""
+    if not user:
+        abort(401)
+
     if request.method == "GET":
-        return jsonify({"names": _load_web_credential_names(creds_file)})
+        return jsonify({"names": _load_web_credential_names(user)})
 
     data = request.json or {}
     ig_username = (data.get("username") or "").strip().lstrip("@")
@@ -666,13 +647,18 @@ def api_web_credentials():
     if not name or not all(ch.isalnum() or ch == "_" for ch in name):
         return jsonify({"ok": False, "error": "Name must contain only letters, numbers, and underscores"}), 400
 
-    with open(creds_file, encoding="utf-8") as f:
-        creds = json.load(f)
-    if any(c.get("name") == name for c in creds):
-        return jsonify({"ok": False, "error": f"Account '{name}' already exists"}), 409
-
-    creds.append({"name": name, "username": ig_username, "password": ig_password})
-    creds_file.write_text(json.dumps(creds, indent=2), encoding="utf-8")
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM accounts WHERE user = ? AND ig_name = ?",
+            (user, name),
+        ).fetchone()
+        if existing:
+            return jsonify({"ok": False, "error": f"Account '{name}' already exists"}), 409
+        conn.execute(
+            "INSERT INTO accounts (user, ig_name, ig_username, ig_password) "
+            "VALUES (?, ?, ?, ?)",
+            (user, name, ig_username, ig_password),
+        )
     return jsonify({"ok": True, "name": name})
 
 

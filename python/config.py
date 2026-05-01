@@ -40,9 +40,12 @@ IG_POST_DELAY = int(os.getenv("IG_POST_DELAY", "10"))
 # ------------------------------------------------------------------ #
 #  Instagram Web Client (Playwright / stealth)                        #
 # ------------------------------------------------------------------ #
-WEB_CREDENTIALS_FILE = Path(os.getenv("WEB_CREDENTIALS_FILE", AI_DIR / "personas" / "web_credentials.json"))
 SESSIONS_DIR         = Path(os.getenv("SESSIONS_DIR",         BASE_DIR / "python" / "web_crawler" / "sessions"))
 WEB_HEADLESS         = os.getenv("WEB_HEADLESS", "false").lower() == "true"
+
+# Active app-user for DB queries. Mutated by entry points (web_app, CLI scripts)
+# alongside SESSIONS_DIR before invoking web_crawler code.
+CURRENT_USER = "brett"
 
 # ------------------------------------------------------------------ #
 #  UI auth (Flask)                                                    #

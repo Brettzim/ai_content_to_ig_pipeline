@@ -4,8 +4,10 @@ Instagram's native Switch-accounts feature. For each account it visits every
 configured target page, opens the most recent non-pinned post, and leaves a
 random comment from the shared comment bank.
 
-Config file (JSON):
-  personas/auto_comment_config.json   (copy from .example.json)
+Config (comments bank only — JSON):
+  ai/users/<user>/auto_comment_config.json
+
+Account credentials and group assignments are stored in SQLite (data.db).
 
 Prereq: all accounts must already be added to the same browser session
 (multi-login). The first account in the config is the entry point — its
@@ -43,24 +45,34 @@ log = logging.getLogger("auto_commenter")
 
 DEFAULT_USER = "brett"
 
+# Pacing — randomized within each window. Hoisted to module-level constants
+# (used to be UI-configurable; locked down to keep IG rate-limit behavior stable).
+DELAY_BETWEEN_TARGETS_S = (2.0, 5.0)
+DELAY_BETWEEN_ACCOUNTS_S = (5.0, 10.0)
 
-def _load_config(path: Path) -> dict:
+
+def _load_json_config(path: Path) -> dict:
     if not path.exists():
-        raise FileNotFoundError(
-            f"Auto-comment config missing: {path}. "
-            "Copy personas/auto_comment_config.example.json and fill it in."
-        )
+        return {}
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def _pick_delay(value, default: tuple[float, float]) -> float:
-    lo, hi = default
-    if isinstance(value, list) and len(value) == 2:
-        lo, hi = float(value[0]), float(value[1])
-    elif isinstance(value, (int, float)):
-        return float(value)
-    return random.uniform(lo, hi)
+def _load_assignments_from_db(user: str) -> dict[str, list[str]]:
+    """Aggregate auto_comment rows for `user` into {ig_name: [targets dedup'd]}."""
+    from db import get_conn
+    accounts_cfg: dict[str, list[str]] = {}
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ig_name, target FROM auto_comment "
+            "WHERE user = ? ORDER BY ig_name, target",
+            (user,),
+        ).fetchall()
+    for r in rows:
+        bucket = accounts_cfg.setdefault(r["ig_name"], [])
+        if r["target"] not in bucket:
+            bucket.append(r["target"])
+    return accounts_cfg
 
 
 def _make_comment_picker(comments: list[str]):
@@ -77,8 +89,7 @@ def _make_comment_picker(comments: list[str]):
 
 
 def _process_account_on_page(page: Page, account_name: str, targets: list[str],
-                             pick_comment, delay_between_targets,
-                             dry_run: bool) -> dict:
+                             pick_comment, dry_run: bool) -> dict:
     """Run the comment loop for one account on an already-authenticated page."""
     stats = {"account": account_name, "attempted": 0, "succeeded": 0, "failed": []}
 
@@ -110,15 +121,13 @@ def _process_account_on_page(page: Page, account_name: str, targets: list[str],
             web.close_post_view(page)
 
         if t_idx < len(targets) - 1:
-            delay = _pick_delay(delay_between_targets, (25.0, 70.0))
-            time.sleep(delay)
+            time.sleep(random.uniform(*DELAY_BETWEEN_TARGETS_S))
 
     return stats
 
 
 def _process_one_account(name: str, targets: list[str],
-                         comments: list[str], between_targets,
-                         dry_run: bool) -> dict:
+                         comments: list[str], dry_run: bool) -> dict:
     """Open `name`'s own session, post comments, persist state, close."""
     try:
         web.ensure_session(name)
@@ -140,7 +149,7 @@ def _process_one_account(name: str, targets: list[str],
         try:
             picker = _make_comment_picker(comments)
             stats = _process_account_on_page(
-                page, name, targets, picker, between_targets, dry_run,
+                page, name, targets, picker, dry_run,
             )
             return stats
         finally:
@@ -154,7 +163,7 @@ def _process_one_account(name: str, targets: list[str],
 
 def _worker_loop(queue: list[tuple[str, list[str]]],
                  queue_lock: threading.Lock, comments: list[str],
-                 between_targets, between_accounts, dry_run: bool,
+                 dry_run: bool,
                  out_stats: list[dict], stats_lock: threading.Lock) -> None:
     """Pull accounts off the shared queue one at a time until empty."""
     first = True
@@ -165,8 +174,7 @@ def _worker_loop(queue: list[tuple[str, list[str]]],
             name, targets = queue.pop(0)
 
         if not first:
-            delay = _pick_delay(between_accounts, (60.0, 180.0))
-            time.sleep(delay)
+            time.sleep(random.uniform(*DELAY_BETWEEN_ACCOUNTS_S))
         first = False
 
         if not targets:
@@ -174,7 +182,7 @@ def _worker_loop(queue: list[tuple[str, list[str]]],
         else:
             try:
                 result = _process_one_account(
-                    name, targets, comments, between_targets, dry_run,
+                    name, targets, comments, dry_run,
                 )
             except Exception as e:
                 result = {"account": name, "attempted": 0, "succeeded": 0,
@@ -188,17 +196,16 @@ def run(config_path: Path,
         only_account: str | None = None,
         dry_run: bool = False,
         parallel_workers: int = 2) -> list[dict]:
-    cfg = _load_config(config_path)
-    comments: list[str] = cfg.get("comments", [])
-    # New shape: {"assignments": {girl: [targets]}}. Legacy: {"accounts": {...}}.
-    accounts_cfg: dict[str, list[str]] = cfg.get("assignments") or cfg.get("accounts") or {}
-    between_targets = cfg.get("delay_between_targets_s", [25, 70])
-    between_accounts = cfg.get("delay_between_accounts_s", [60, 180])
+    cfg = _load_json_config(config_path)
+    comments: list[str] = cfg.get("comments") or []
+    accounts_cfg = _load_assignments_from_db(config.CURRENT_USER)
 
     if not comments:
         raise ValueError("Config has empty 'comments' bank")
     if not accounts_cfg:
-        raise ValueError("Config has no 'assignments' entries")
+        raise ValueError(
+            f"No auto_comment groups configured for user {config.CURRENT_USER!r}"
+        )
 
     items = [(n, t) for n, t in accounts_cfg.items() if t]
     if only_account:
@@ -218,8 +225,7 @@ def run(config_path: Path,
     for wid in range(n_workers):
         t = threading.Thread(
             target=_worker_loop,
-            args=(queue, queue_lock, comments, between_targets,
-                  between_accounts, dry_run, all_stats, stats_lock),
+            args=(queue, queue_lock, comments, dry_run, all_stats, stats_lock),
             daemon=True,
         )
         t.start()
@@ -253,8 +259,8 @@ def main():
     )
 
     user_dir = config.AI_DIR / "users" / args.user
-    config.WEB_CREDENTIALS_FILE = user_dir / "web_credentials.json"
     config.SESSIONS_DIR = config.SESSIONS_DIR / args.user
+    config.CURRENT_USER = args.user
     cfg_path = args.config or (user_dir / "auto_comment_config.json")
 
     run(cfg_path, only_account=args.account, dry_run=args.dry_run,

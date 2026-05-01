@@ -20,7 +20,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import _pathsetup  # noqa: F401
 
-import json
 import logging
 import random
 import time
@@ -56,17 +55,19 @@ def _type_human(page: Page, selector: str, text: str) -> None:
 
 
 def _load_credentials(account_name: str) -> dict:
-    if not config.WEB_CREDENTIALS_FILE.exists():
-        raise FileNotFoundError(
-            f"Web credentials file missing: {config.WEB_CREDENTIALS_FILE}. "
-            "Copy personas/web_credentials.example.json and fill it in."
+    from db import get_conn
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT ig_name, ig_username, ig_password FROM accounts "
+            "WHERE user = ? AND ig_name = ?",
+            (config.CURRENT_USER, account_name),
+        ).fetchone()
+    if row is None:
+        raise KeyError(
+            f"No web credentials for account '{account_name}' "
+            f"(user={config.CURRENT_USER!r})"
         )
-    with open(config.WEB_CREDENTIALS_FILE, encoding="utf-8") as f:
-        creds = json.load(f)
-    for entry in creds:
-        if entry.get("name") == account_name:
-            return entry
-    raise KeyError(f"No web credentials for account '{account_name}'")
+    return {"name": row["ig_name"], "username": row["ig_username"], "password": row["ig_password"]}
 
 
 def _session_path(account_name: str) -> Path:
@@ -696,7 +697,7 @@ def switch_account(page: Page, target_account_name: str) -> bool:
     same browser session. The target account must already be added to this
     session's multi-login (we do not handle the "Add account" path here).
 
-    Resolves target_account_name → IG username via web_credentials.json.
+    Resolves target_account_name → IG username via the SQLite accounts table.
     Returns True if the switch completed and the home feed loads as that user.
     """
     creds = _load_credentials(target_account_name)
@@ -869,9 +870,8 @@ if __name__ == "__main__":
         user = argv[1]
         argv = argv[2:]
 
-    user_dir = config.AI_DIR / "users" / user
-    config.WEB_CREDENTIALS_FILE = user_dir / "web_credentials.json"
     config.SESSIONS_DIR = config.SESSIONS_DIR / user
+    config.CURRENT_USER = user
 
     if len(argv) < 2:
         print(usage)

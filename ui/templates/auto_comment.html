@@ -164,8 +164,7 @@
   </main>
 
   <script>
-    let state = { comments: [], groups: [], girls: [],
-                   delay_t: [25,70], delay_a: [60,180] };
+    let state = { comments: [], groups: [], girls: [] };
     let personas = {};
     let pollTimer = null;
     let currentJob = null;
@@ -189,8 +188,6 @@
         models: [...(g.models || [])],
         targets: [...(g.targets || [])],
       }));
-      state.delay_t = cfg.delay_between_targets_s || [25,70];
-      state.delay_a = cfg.delay_between_accounts_s || [60,180];
       document.getElementById('comments').value = state.comments.join('\n');
       render();
     }
@@ -344,12 +341,7 @@
         models: [...new Set(g.models || [])].filter(m => validModels.has(m)),
         targets: [...new Set(g.targets || [])].filter(t => t),
       }));
-      return {
-        comments,
-        groups,
-        delay_between_targets_s: state.delay_t,
-        delay_between_accounts_s: state.delay_a,
-      };
+      return { comments, groups };
     }
 
     async function save() {

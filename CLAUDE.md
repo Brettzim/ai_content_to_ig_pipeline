@@ -24,14 +24,18 @@ venv\Scripts\python python/web_crawler/auto_commenter.py
 
 ```
 ai/                           — all content & data
+  data.db                     — SQLite: accounts (web credentials) + auto_comment groups
+  users/<user>/               — per-user data
+    accounts.json             — Meta Graph API accounts (name + ig_user_id only)
+    auto_comment_config.json  — comment bank (comments list only; groups are in data.db)
   personas/                   — per-model folders (profile .md, refs, history)
-                                plus accounts.json, web_credentials.json, auto_comment_config.json
   prompt_engineering/         — universal prompt rules
   loads/                      — CLI job JSON files
   photos/ edited_photos/ videos/
 
 python/                       — all Python modules (flat-import style)
   config.py                   — shared settings; resolves paths from project root
+  db.py                       — SQLite helper (get_conn context manager)
   _pathsetup.py               — shim that puts grok/, meta_api/, web_crawler/ on sys.path
   grok/xai_client.py
   meta_api/instagram_client.py
@@ -71,9 +75,10 @@ The web UI feeds the relevant files to the AI at generation time. To change how 
 ## Accounts
 - All accounts share one IG access token in `.env` as `IG_ACCESS_TOKEN`
 - Token expires every ~60 days — regenerate via Meta Graph API Explorer
-- `accounts.json` stores `name` and `ig_user_id` only
+- `accounts.json` stores `name` and `ig_user_id` only (Meta Graph API)
+- Web credentials (IG username/password for Playwright) are stored in `ai/data.db` — never in JSON
 
 ## Things to Never Do
-- Do not commit `.env` or `accounts.json`
+- Do not commit `.env`, `accounts.json`, or `data.db`
 - Do not put the access token in `accounts.json`
 - Do not rename photos without updating the load file
